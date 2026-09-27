@@ -1,0 +1,23 @@
+# binaries
+/bin/
+/queue-core-bot
+*.exe
+
+# secrets
+.env
+
+# local database
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# go
+*.test
+coverage.out
+
+# editors
+.env
+.idea/
+.vscode/
+.DS_Store
