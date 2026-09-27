@@ -24,6 +24,6 @@ func (h *Handler) start(ctx context.Context, b *bot.Bot, update *models.Update) 
 		Text:   "Привет, это бот Queue Core",
 	})
 	if err != nil {
-		log.Println("send /start reply: %v", err)
+		log.Printf("send /start reply: %v", err)
 	}
 }
