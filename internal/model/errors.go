@@ -7,4 +7,6 @@ var (
 	ErrAlreadyJoined = errors.New("user is already in the queue")
 	ErrNotInQueue    = errors.New("user is not in the queue")
 	ErrQueueClosed   = errors.New("queue is closed")
+
+	ErrAlreadyDone   = errors.New("user has already defended")
 )
