@@ -10,48 +10,78 @@ import (
 
 const maxText = 4000
 
-func Board(q model.Queue, names map[int64]string) string {
-	name := func(id int64) string {
-		if n, ok := names[id]; ok {
-			return n
-		}
-		return fmt.Sprintf("user %d", id)
+// Name returns the name to show for a user, falling back to the user ID
+// when the bot has never seen them.
+func Name(names map[int64]string, id int64) string {
+	if n, ok := names[id]; ok {
+		return n
 	}
+	return fmt.Sprintf("user %d", id)
+}
 
-	var b strings.Builder
-	b.WriteString(q.Name)
+// Board returns the text of a queue board. names maps user IDs to the names
+// to show, see Name.
+//
+//	Practice 4
+//	3 waiting · started by Anna Kuznetsova
+//
+//	1. Михаил Петров
+//	2. Ivan
+//	3. @dmitry_s
+//
+//	Done: Anna Kuznetsova
+func Board(q model.Queue, names map[int64]string) string {
+	var t text
+	t.write(q.Name)
 	if q.Closed {
-		b.WriteString(" (closed)")
+		t.write(" (closed)")
 	}
 
 	waiting := q.Waiting()
-	fmt.Fprintf(&b, "\n%d waiting · started by %s\n\n", len(waiting), name(q.CreatedBy))
+	t.write(fmt.Sprintf("\n%d waiting · started by %s\n\n", len(waiting), Name(names, q.CreatedBy)))
 
 	if len(waiting) == 0 {
-		b.WriteString("No one yet. Press + Join.")
+		t.write("No one yet. Press + Join.")
 	}
 	for i, e := range waiting {
-		line := fmt.Sprintf("%d. %s\n", i+1, name(e.UserID))
-		if utf8.RuneCountInString(b.String())+utf8.RuneCountInString(line) > maxText {
-			fmt.Fprintf(&b, "… and %d more\n", len(waiting)-i)
+		line := fmt.Sprintf("%d. %s\n", i+1, Name(names, e.UserID))
+		if !t.fits(line) {
+			t.write(fmt.Sprintf("… and %d more\n", len(waiting)-i))
 			break
 		}
-		b.WriteString(line)
+		t.write(line)
 	}
 
 	var done []string
 	for _, e := range q.Entries {
 		if e.Done {
-			done = append(done, name(e.UserID))
+			done = append(done, Name(names, e.UserID))
 		}
 	}
 	if len(done) > 0 {
 		doneLine := "\nDone: " + strings.Join(done, ", ")
-		if utf8.RuneCountInString(b.String())+utf8.RuneCountInString(doneLine) > maxText {
+		if !t.fits(doneLine) {
 			doneLine = fmt.Sprintf("\nDone: %d people", len(done))
 		}
-		b.WriteString(doneLine)
+		t.write(doneLine)
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(t.b.String(), "\n")
+}
+
+// text builds a message and keeps count of its characters, so checking
+// the limit doesn't mean counting the whole message again for every line.
+type text struct {
+	b     strings.Builder
+	runes int
+}
+
+func (t *text) write(s string) {
+	t.b.WriteString(s)
+	t.runes += utf8.RuneCountInString(s)
+}
+
+// fits reports whether s can be added without going over maxText.
+func (t *text) fits(s string) bool {
+	return t.runes+utf8.RuneCountInString(s) <= maxText
 }

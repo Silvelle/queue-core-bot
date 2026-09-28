@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
@@ -34,12 +35,16 @@ func New(ctx context.Context, b *bot.Bot, svc *service.Service, botUsername stri
 func (h *Handler) Register(ctx context.Context) {
 	h.command("start", h.help)
 	h.command("help", h.help)
-	h.command("new", h.newQueue)
+	h.groupCommand("new", h.newQueue)
+	h.groupCommand("swap", h.swap)
+	h.groupCommand("close", h.closeQueue)
 	h.b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "b:", bot.MatchTypePrefix, h.boardPress)
 
 	_, err := h.b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
 		Commands: []models.BotCommand{
 			{Command: "new", Description: "Start a queue: /new Practice 4"},
+			{Command: "swap", Description: "Swap places: /swap 5"},
+			{Command: "close", Description: "Close a queue: /close Practice 4"},
 			{Command: "help", Description: "How to use the bot"},
 		},
 	})
@@ -67,18 +72,27 @@ func (h *Handler) command(name string, f func(ctx context.Context, msg *models.M
 	})
 }
 
+// groupCommand registers f like command, for commands that only make sense
+// in a group: queues belong to a group chat, and every queue action needs
+// to know who sent it. f can rely on msg.From being set.
+func (h *Handler) groupCommand(name string, f func(ctx context.Context, msg *models.Message, args string)) {
+	h.command(name, func(ctx context.Context, msg *models.Message, args string) {
+		if msg.Chat.Type == models.ChatTypePrivate {
+			h.reply(ctx, msg, privateChatText)
+			return
+		}
+		if msg.From == nil {
+			return
+		}
+		f(ctx, msg, args)
+	})
+}
+
 func (h *Handler) help(ctx context.Context, msg *models.Message, _ string) {
 	h.reply(ctx, msg, helpText)
 }
 
 func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string) {
-	if msg.Chat.Type == models.ChatTypePrivate {
-		h.reply(ctx, msg, privateChatText)
-		return
-	}
-	if msg.From == nil {
-		return
-	}
 	if name == "" {
 		h.reply(ctx, msg, newUsageText)
 		return
@@ -107,6 +121,73 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 	if err := h.svc.SetBoardMessage(ctx, q.ID, board.ID); err != nil {
 		log.Printf("remember board of queue %d: %v", q.ID, err)
 	}
+}
+
+// swap handles /swap <position>. It swaps the sender with whoever is at
+// that position and posts a public line, so the change is visible to all.
+func (h *Handler) swap(ctx context.Context, msg *models.Message, args string) {
+	pos, err := strconv.Atoi(args)
+	if err != nil {
+		h.reply(ctx, msg, swapUsageText)
+		return
+	}
+
+	q, ok := h.commandQueue(ctx, msg, "", true, "")
+	if !ok {
+		return
+	}
+
+	res, err := h.svc.SwapWithPosition(ctx, q.ID, msg.From.ID, pos)
+	if err != nil {
+		h.replyError(ctx, msg, "swap", err)
+		return
+	}
+	h.redraw.Schedule(q.ID)
+
+	names, err := h.svc.Names(ctx, q)
+	if err != nil {
+		log.Printf("names for swap line in queue %d: %v", q.ID, err)
+	}
+	h.reply(ctx, msg, swappedText(q.Name, render.Name(names, msg.From.ID), render.Name(names, res.TargetID), res.From, res.To))
+}
+
+// closeQueue handles /close <name>, or /close sent as a reply to a board.
+// The board stays in the chat without its buttons.
+func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name string) {
+	q, ok := h.commandQueue(ctx, msg, name, false, closeUsageText)
+	if !ok {
+		return
+	}
+
+	if err := h.svc.Close(ctx, q.ID); err != nil {
+		h.replyError(ctx, msg, "close queue", err)
+		return
+	}
+	if err := h.drawBoard(ctx, q.ID); err != nil {
+		log.Printf("redraw closed board of queue %d: %v", q.ID, err)
+	}
+	h.reply(ctx, msg, closedText(q.Name, len(q.Waiting())))
+}
+
+// commandQueue finds the queue a command is about, see pickQueue. If there
+// is none, it explains why in the chat and returns false.
+func (h *Handler) commandQueue(ctx context.Context, msg *models.Message, name string, onlyOne bool, usage string) (model.Queue, bool) {
+	open, err := h.svc.OpenQueues(ctx, msg.Chat.ID)
+	if err != nil {
+		h.replyError(ctx, msg, "list open queues", err)
+		return model.Queue{}, false
+	}
+
+	replyTo := 0
+	if msg.ReplyToMessage != nil {
+		replyTo = msg.ReplyToMessage.ID
+	}
+	q, err := pickQueue(open, replyTo, name, onlyOne)
+	if err != nil {
+		h.reply(ctx, msg, pickErrorText(err, usage))
+		return model.Queue{}, false
+	}
+	return q, true
 }
 
 func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Update) {
@@ -160,10 +241,7 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	}
 
 	if err != nil {
-		if errorText(err) == genericErrText {
-			log.Printf("queue %d, action %q, user %d: %v", q.ID, action, userID, err)
-		}
-		return errorText(err), false
+		return h.userError(err, "queue %d, action %q, user %d", q.ID, action, userID), false
 	}
 	return text, true
 }
@@ -189,7 +267,7 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 		ChatID:      q.ChatID,
 		MessageID:   q.BoardMsgID,
 		Text:        text,
-		ReplyMarkup: keyboard.Board(q.ID),
+		ReplyMarkup: boardMarkup(q),
 	})
 	// Telegram refuses an edit that changes nothing, for example when
 	// someone joined and left before the redraw. That's not a problem.
@@ -197,6 +275,15 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 		return nil
 	}
 	return err
+}
+
+// boardMarkup returns the buttons under a board. A closed queue gets an
+// empty keyboard, which removes the buttons from the message.
+func boardMarkup(q model.Queue) *models.InlineKeyboardMarkup {
+	if q.Closed {
+		return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+	}
+	return keyboard.Board(q.ID)
 }
 
 func (h *Handler) boardText(ctx context.Context, q model.Queue) (string, error) {
@@ -240,12 +327,19 @@ func (h *Handler) reply(ctx context.Context, msg *models.Message, text string) {
 	}
 }
 
-// replyError answers with the error's message. Unexpected errors are also
-// logged, since the person only sees a generic message.
+// replyError answers with the error's message, see userError.
 func (h *Handler) replyError(ctx context.Context, msg *models.Message, what string, err error) {
-	text := errorText(err)
-	if text == genericErrText && !errors.Is(err, context.Canceled) {
-		log.Printf("%s in chat %d: %v", what, msg.Chat.ID, err)
+	h.reply(ctx, msg, h.userError(err, "%s in chat %d", what, msg.Chat.ID))
+}
+
+// userError returns the message a person sees for err. Unexpected errors
+// are also logged with the given context, since the person only sees a
+// generic message. A cancelled context means the bot is shutting down,
+// which isn't worth logging.
+func (h *Handler) userError(err error, format string, args ...any) string {
+	text, known := errorText(err)
+	if !known && !errors.Is(err, context.Canceled) {
+		log.Printf(format+": %v", append(args, err)...)
 	}
-	h.reply(ctx, msg, text)
+	return text
 }
