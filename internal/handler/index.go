@@ -147,18 +147,6 @@ func (h *Handler) send(ctx context.Context, chatID int64, text string, markup *m
 	return h.b.SendMessage(ctx, params)
 }
 
-// placesText lists the user's place in every open queue of the chat.
-func (h *Handler) placesText(ctx context.Context, chatID, userID int64) (string, error) {
-	open, err := h.svc.OpenQueues(ctx, chatID)
-	if err != nil {
-		return "", err
-	}
-	if len(open) == 0 {
-		return noQueuesText, nil
-	}
-	return placesTop + render.Where(open, userID), nil
-}
-
 // isNotModified reports Telegram refusing an edit that changes nothing.
 func isNotModified(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "message is not modified")

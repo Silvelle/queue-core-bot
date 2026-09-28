@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"fmt"
-	"unicode/utf8"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
 )
@@ -36,9 +35,8 @@ const (
 	movedText       = "Доска перенесена ниже ↓"
 	movedListText   = "Список очередей перенесён ниже ↓"
 
-	leftText  = "Вы вышли из очереди."
-	doneText  = "Отмечено: сдано. Если по ошибке, нажмите «↩ Сброс»."
-	placesTop = "Ваши места:\n"
+	leftText = "Вы вышли из очереди."
+	doneText = "Отмечено: сдано. Если по ошибке, нажмите «↩ Сброс»."
 )
 
 // errorTexts is what a person sees for each rule the service enforces.
@@ -116,16 +114,4 @@ func pickErrorText(err error, usage string) string {
 		return whichQueueText
 	}
 	return genericErrText
-}
-
-// maxAlert is Telegram's limit for the text of a button popup.
-const maxAlert = 200
-
-// fitAlert cuts text to fit a button popup, ending it with "…" if needed.
-func fitAlert(text string) string {
-	if utf8.RuneCountInString(text) <= maxAlert {
-		return text
-	}
-	runes := []rune(text)
-	return string(runes[:maxAlert-1]) + "…"
 }

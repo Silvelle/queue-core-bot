@@ -3,9 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
 )
@@ -111,21 +109,5 @@ func TestPickErrorText(t *testing.T) {
 				t.Errorf("pickErrorText() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestFitAlert(t *testing.T) {
-	short := "Практика 4: вы №3 из 7"
-	if got := fitAlert(short); got != short {
-		t.Errorf("fitAlert(short) = %q, want it unchanged", got)
-	}
-
-	long := strings.Repeat("я", 300)
-	got := fitAlert(long)
-	if n := utf8.RuneCountInString(got); n != maxAlert {
-		t.Errorf("fitAlert(long) is %d characters, want %d", n, maxAlert)
-	}
-	if !strings.HasSuffix(got, "…") {
-		t.Error("a cut alert should end with …")
 	}
 }

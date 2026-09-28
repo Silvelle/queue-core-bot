@@ -219,7 +219,7 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 	}
 
 	ans := h.act(ctx, q, cq.From.ID, action)
-	h.answer(ctx, cq, ans.text, ans.alert)
+	h.toast(ctx, cq, ans.text)
 	if ans.redraw {
 		h.redraw.Schedule(queueID)
 	}
@@ -247,9 +247,6 @@ func (h *Handler) showPress(ctx context.Context, cq *models.CallbackQuery, q mod
 // answer is how the bot responds to a board button.
 type answer struct {
 	text string
-	// alert shows the text in a popup window instead of a short toast,
-	// for answers too long for a toast.
-	alert bool
 	// redraw is set when the queue changed and its board needs redrawing.
 	redraw bool
 }
@@ -280,11 +277,11 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	case callbacks.Where:
 		return answer{text: whereText(q.Position(userID), len(q.Waiting()))}
 	case callbacks.All:
-		places, err := h.placesText(ctx, q.ChatID, userID)
-		if err != nil {
-			return answer{text: h.userError(err, "list places in chat %d", q.ChatID)}
+		// Same as /queues: the list of queues at the bottom of the chat.
+		if err := h.refreshIndex(ctx, q.ChatID, true); err != nil {
+			return answer{text: h.userError(err, "post list of queues in chat %d", q.ChatID)}
 		}
-		return answer{text: fitAlert(places), alert: true}
+		return answer{}
 	}
 
 	if err != nil {
@@ -361,17 +358,12 @@ func (h *Handler) saveUser(ctx context.Context, u models.User) {
 	}
 }
 
+// toast answers a button press with a short text only the presser sees. An
+// empty text just stops the button's loading spinner.
 func (h *Handler) toast(ctx context.Context, cq *models.CallbackQuery, text string) {
-	h.answer(ctx, cq, text, false)
-}
-
-// answer responds to a button press with text only the presser sees, as a
-// short toast or, with alert, a popup window.
-func (h *Handler) answer(ctx context.Context, cq *models.CallbackQuery, text string, alert bool) {
 	_, err := h.b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: cq.ID,
 		Text:            text,
-		ShowAlert:       alert,
 	})
 	if err != nil {
 		log.Printf("answer button press: %v", err)
