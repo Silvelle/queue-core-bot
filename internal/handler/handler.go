@@ -316,6 +316,7 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 		ChatID:      q.ChatID,
 		MessageID:   q.BoardMsgID,
 		Text:        text,
+		ParseMode:   models.ParseModeHTML,
 		ReplyMarkup: boardMarkup(q),
 	})
 	// Telegram refuses an edit that changes nothing, for example when

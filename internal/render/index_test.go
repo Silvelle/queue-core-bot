@@ -20,9 +20,12 @@ func TestIndex(t *testing.T) {
 		want string
 	}{
 		{"two queues", []model.Queue{practice, lab},
-			"Открытые очереди:\n\n• Practice 4\n• Lab 2\n\nНажмите на очередь, чтобы показать её доску внизу чата."},
+			"<b>Доступные очереди:</b>\n- Practice 4\n- Lab 2"},
+		{"name with HTML", []model.Queue{{Name: "Лаб <3>"}},
+			"<b>Доступные очереди:</b>\n- Лаб &lt;3&gt;"},
+		// "<название>" would be read as an HTML tag and break the message.
 		{"empty", nil,
-			"Открытых очередей нет.\nСоздайте новую: /new <название>"},
+			"Открытых очередей нет.\nСоздайте новую: /new &lt;название&gt;"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

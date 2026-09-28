@@ -32,6 +32,7 @@ func (h *Handler) refreshIndex(ctx context.Context, chatID int64, repost bool) e
 			ChatID:      chatID,
 			MessageID:   oldID,
 			Text:        text,
+			ParseMode:   models.ParseModeHTML,
 			ReplyMarkup: markup,
 		})
 		if err == nil || isNotModified(err) {
@@ -135,11 +136,11 @@ func (h *Handler) retire(ctx context.Context, chatID int64, msgID int, movedText
 	})
 }
 
-// send posts a message with buttons. An empty keyboard is left out:
-// Telegram accepts it on an edit, where it removes the buttons, but a new
-// message simply has none.
+// send posts a board or a list of queues: HTML text with buttons, see
+// render. An empty keyboard is left out: Telegram accepts it on an edit,
+// where it removes the buttons, but a new message simply has none.
 func (h *Handler) send(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
-	params := &bot.SendMessageParams{ChatID: chatID, Text: text}
+	params := &bot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML}
 	if markup != nil && len(markup.InlineKeyboard) > 0 {
 		params.ReplyMarkup = markup
 	}
