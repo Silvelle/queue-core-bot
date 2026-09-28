@@ -44,6 +44,14 @@ var migrations = []string{
 		UNIQUE (queue_id, user_id)
 	);
 	`,
+
+	// 2: the message in each chat that lists its open queues.
+	`
+	CREATE TABLE chats (
+		id           INTEGER PRIMARY KEY,
+		index_msg_id INTEGER NOT NULL DEFAULT 0
+	);
+	`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

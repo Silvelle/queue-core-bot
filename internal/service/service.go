@@ -194,6 +194,29 @@ func (s *Service) Done(ctx context.Context, queueID, userID int64) error {
 	return err
 }
 
+// Undo takes back the user's Done. They return to the place they had,
+// because a done entry never leaves its spot in the queue.
+func (s *Service) Undo(ctx context.Context, queueID, userID int64) (int, error) {
+	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		for i, e := range q.Entries {
+			if e.UserID != userID {
+				continue
+			}
+			if !e.Done {
+				return model.ErrNotDone
+			}
+			q.Entries[i].Done = false
+			q.Entries[i].DoneAt = time.Time{}
+			return nil
+		}
+		return model.ErrNotInQueue
+	})
+	if err != nil {
+		return 0, err
+	}
+	return q.Position(userID), nil
+}
+
 type Swapped struct {
 	TargetID int64
 	From     int
@@ -256,16 +279,26 @@ func (s *Service) Close(ctx context.Context, queueID int64) error {
 	return err
 }
 
+// IndexMessage returns the chat's message listing its queues, or 0.
+func (s *Service) IndexMessage(ctx context.Context, chatID int64) (int, error) {
+	return s.store.IndexMessage(ctx, chatID)
+}
+
+// SetIndexMessage remembers the chat's list message; 0 forgets it.
+func (s *Service) SetIndexMessage(ctx context.Context, chatID int64, msgID int) error {
+	return s.store.SetIndexMessage(ctx, chatID, msgID)
+}
+
 // SaveUser stores the user's current names. Handlers call it on every
 // update, so renamed users show up with their new name.
 func (s *Service) SaveUser(ctx context.Context, u model.User) error {
 	return s.store.SaveUser(ctx, u)
 }
 
-// Names returns the full name of everyone in the queue, including whoever
-// created it, for drawing the board. Users the bot never saw are left out.
+// Names returns the full name of everyone in the queue, for drawing the
+// board. Users the bot never saw are left out.
 func (s *Service) Names(ctx context.Context, q model.Queue) (map[int64]string, error) {
-	names := make(map[int64]string, len(q.Entries)+1)
+	names := make(map[int64]string, len(q.Entries))
 	add := func(id int64) error {
 		if _, ok := names[id]; ok {
 			return nil
@@ -281,9 +314,6 @@ func (s *Service) Names(ctx context.Context, q model.Queue) (map[int64]string, e
 		return nil
 	}
 
-	if err := add(q.CreatedBy); err != nil {
-		return nil, err
-	}
 	for _, e := range q.Entries {
 		if err := add(e.UserID); err != nil {
 			return nil, err

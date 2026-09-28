@@ -26,4 +26,10 @@ type Storage interface {
 	UpdateQueue(ctx context.Context, q model.Queue) error
 	// OpenQueues returns the chat's queues that are not closed, oldest first.
 	OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, error)
+
+	// IndexMessage returns the message listing the chat's queues, or 0 if
+	// the chat has none yet.
+	IndexMessage(ctx context.Context, chatID int64) (int, error)
+	// SetIndexMessage remembers the chat's list message; 0 forgets it.
+	SetIndexMessage(ctx context.Context, chatID int64, msgID int) error
 }

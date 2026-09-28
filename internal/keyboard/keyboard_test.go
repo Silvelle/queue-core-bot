@@ -6,11 +6,22 @@ import (
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
 )
 
+var wantText = map[callbacks.Action]string{
+	callbacks.Join:  "+ Записаться",
+	callbacks.Leave: "Выйти",
+	callbacks.ToEnd: "В конец",
+	callbacks.Done:  "✓ Сдано",
+	callbacks.Undo:  "↩ Сброс",
+	callbacks.Where: "Где я?",
+	callbacks.All:   "📋 Все очереди",
+}
+
 func TestBoardLayout(t *testing.T) {
 	want := [][]string{
-		{"+ Join", "Leave"},
-		{"To end", "✓ Done"},
-		{"Where am I?"},
+		{"+ Записаться", "Выйти"},
+		{"В конец", "Где я?"},
+		{"✓ Сдано", "↩ Сброс"},
+		{"📋 Все очереди"},
 	}
 
 	rows := Board(42).InlineKeyboard
@@ -29,15 +40,10 @@ func TestBoardLayout(t *testing.T) {
 	}
 }
 
+// Every button must decode back to this queue, and each action must appear
+// exactly once: a typo like two Join buttons would otherwise go unnoticed.
 func TestBoardButtonsDecode(t *testing.T) {
 	const queueID = 42
-	wantText := map[callbacks.Action]string{
-		callbacks.Join:  "+ Join",
-		callbacks.Leave: "Leave",
-		callbacks.ToEnd: "To end",
-		callbacks.Done:  "✓ Done",
-		callbacks.Where: "Where am I?",
-	}
 
 	seen := make(map[callbacks.Action]bool)
 	for _, row := range Board(queueID).InlineKeyboard {
@@ -63,5 +69,43 @@ func TestBoardButtonsDecode(t *testing.T) {
 	}
 	if len(seen) != len(wantText) {
 		t.Errorf("%d actions on the board, want %d", len(seen), len(wantText))
+	}
+}
+
+func TestLinks(t *testing.T) {
+	kb := Links([]Link{
+		{Text: "Practice 4", URL: "https://t.me/c/123/10"},
+		{Text: "Lab 2", URL: "https://t.me/c/123/20"},
+	})
+	if len(kb.InlineKeyboard) != 2 {
+		t.Fatalf("%d rows, want one per link", len(kb.InlineKeyboard))
+	}
+	btn := kb.InlineKeyboard[1][0]
+	if btn.Text != "Lab 2" || btn.URL != "https://t.me/c/123/20" || btn.CallbackData != "" {
+		t.Errorf("second button = %+v, want a plain link to Lab 2", btn)
+	}
+}
+
+func TestMessageURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		chatID int64
+		msgID  int
+		want   string
+		wantOK bool
+	}{
+		{"supergroup", -1001234567890, 42, "https://t.me/c/1234567890/42", true},
+		{"basic group", -123456, 42, "", false},
+		{"private chat", 123456, 42, "", false},
+		{"no message yet", -1001234567890, 0, "", false},
+		{"only the prefix", -100, 42, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := MessageURL(tt.chatID, tt.msgID)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("MessageURL(%d, %d) = %q, %v, want %q, %v", tt.chatID, tt.msgID, got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }

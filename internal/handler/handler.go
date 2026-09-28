@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"strconv"
-	"strings"
 
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
 	"github.com/Silvelle/queue-core-bot/internal/keyboard"
@@ -27,7 +26,7 @@ type Handler struct {
 // stop when it is cancelled.
 func New(ctx context.Context, b *bot.Bot, svc *service.Service, botUsername string) *Handler {
 	h := &Handler{b: b, svc: svc, botUsername: botUsername}
-	h.redraw = newRedrawer(ctx, redrawDelay, h.drawBoard)
+	h.redraw = newRedrawer(ctx, h.drawBoard)
 	return h
 }
 
@@ -38,14 +37,16 @@ func (h *Handler) Register(ctx context.Context) {
 	h.groupCommand("new", h.newQueue)
 	h.groupCommand("swap", h.swap)
 	h.groupCommand("close", h.closeQueue)
+	h.groupCommand("queues", h.queues)
 	h.b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "b:", bot.MatchTypePrefix, h.boardPress)
 
 	_, err := h.b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
 		Commands: []models.BotCommand{
-			{Command: "new", Description: "Start a queue: /new Practice 4"},
-			{Command: "swap", Description: "Swap places: /swap 5"},
-			{Command: "close", Description: "Close a queue: /close Practice 4"},
-			{Command: "help", Description: "How to use the bot"},
+			{Command: "new", Description: "Создать очередь"},
+			{Command: "swap", Description: "Поменяться местами"},
+			{Command: "close", Description: "Закрыть очередь"},
+			{Command: "queues", Description: "Список открытых очередей"},
+			{Command: "help", Description: "Как пользоваться ботом"},
 		},
 	})
 	if err != nil {
@@ -121,6 +122,7 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 	if err := h.svc.SetBoardMessage(ctx, q.ID, board.ID); err != nil {
 		log.Printf("remember board of queue %d: %v", q.ID, err)
 	}
+	h.refreshIndexQuietly(ctx, q.ChatID)
 }
 
 // swap handles /swap <position>. It swaps the sender with whoever is at
@@ -167,6 +169,7 @@ func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name stri
 		log.Printf("redraw closed board of queue %d: %v", q.ID, err)
 	}
 	h.reply(ctx, msg, closedText(q.Name, len(q.Waiting())))
+	h.refreshIndexQuietly(ctx, q.ChatID)
 }
 
 // commandQueue finds the queue a command is about, see pickQueue. If there
@@ -207,16 +210,25 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 		return
 	}
 
-	text, changed := h.act(ctx, q, cq.From.ID, action)
-	h.toast(ctx, cq, text)
-	if changed {
+	ans := h.act(ctx, q, cq.From.ID, action)
+	h.answer(ctx, cq, ans.text, ans.alert)
+	if ans.redraw {
 		h.redraw.Schedule(queueID)
 	}
 }
 
-// act runs one board action and returns the toast text, and whether the
-// queue changed and its board needs redrawing.
-func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action callbacks.Action) (string, bool) {
+// answer is how the bot responds to a board button.
+type answer struct {
+	text string
+	// alert shows the text in a popup window instead of a short toast,
+	// for answers too long for a toast.
+	alert bool
+	// redraw is set when the queue changed and its board needs redrawing.
+	redraw bool
+}
+
+// act runs one board action and returns the answer to show.
+func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action callbacks.Action) answer {
 	var (
 		text string
 		err  error
@@ -236,14 +248,24 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	case callbacks.Done:
 		err = h.svc.Done(ctx, q.ID, userID)
 		text = doneText
+	case callbacks.Undo:
+		var pos int
+		pos, err = h.svc.Undo(ctx, q.ID, userID)
+		text = undoText(pos)
 	case callbacks.Where:
-		return whereText(q.Position(userID), len(q.Waiting())), false
+		return answer{text: whereText(q.Position(userID), len(q.Waiting()))}
+	case callbacks.All:
+		places, err := h.placesText(ctx, q.ChatID, userID)
+		if err != nil {
+			return answer{text: h.userError(err, "list places in chat %d", q.ChatID)}
+		}
+		return answer{text: fitAlert(places), alert: true}
 	}
 
 	if err != nil {
-		return h.userError(err, "queue %d, action %q, user %d", q.ID, action, userID), false
+		return answer{text: h.userError(err, "queue %d, action %q, user %d", q.ID, action, userID)}
 	}
-	return text, true
+	return answer{text: text, redraw: true}
 }
 
 // pressedOnBoard reports whether the pressed button is under q's board.
@@ -271,7 +293,7 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 	})
 	// Telegram refuses an edit that changes nothing, for example when
 	// someone joined and left before the redraw. That's not a problem.
-	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+	if isNotModified(err) {
 		return nil
 	}
 	return err
@@ -307,9 +329,16 @@ func (h *Handler) saveUser(ctx context.Context, u models.User) {
 }
 
 func (h *Handler) toast(ctx context.Context, cq *models.CallbackQuery, text string) {
+	h.answer(ctx, cq, text, false)
+}
+
+// answer responds to a button press with text only the presser sees, as a
+// short toast or, with alert, a popup window.
+func (h *Handler) answer(ctx context.Context, cq *models.CallbackQuery, text string, alert bool) {
 	_, err := h.b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: cq.ID,
 		Text:            text,
+		ShowAlert:       alert,
 	})
 	if err != nil {
 		log.Printf("answer button press: %v", err)

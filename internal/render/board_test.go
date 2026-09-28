@@ -9,9 +9,9 @@ import (
 )
 
 var names = map[int64]string{
-	1: "Anna Kuznetsova",
+	1: "Анна Кузнецова",
 	2: "Михаил Петров",
-	3: "Ivan",
+	3: "Иван",
 	4: "@dmitry_s",
 }
 
@@ -28,16 +28,25 @@ func TestBoard(t *testing.T) {
 	}
 
 	want := `Practice 4
-3 waiting · started by Anna Kuznetsova
+В очереди: 3
 
 1. Михаил Петров
-2. Ivan
+2. Иван
 3. @dmitry_s
 
-Done: Anna Kuznetsova`
+Сдали: Анна Кузнецова`
 
 	if got := Board(q, names); got != want {
 		t.Errorf("Board() =\n%s\n\nwant\n%s", got, want)
+	}
+}
+
+// The board doesn't name who created the queue.
+func TestBoardHidesCreator(t *testing.T) {
+	q := model.Queue{Name: "Lab 2", CreatedBy: 1, Entries: []model.Entry{{UserID: 3}}}
+
+	if got := Board(q, names); strings.Contains(got, "Анна") {
+		t.Errorf("Board() shows the creator:\n%s", got)
 	}
 }
 
@@ -45,9 +54,9 @@ func TestBoardEmpty(t *testing.T) {
 	q := model.Queue{Name: "Lab 2", CreatedBy: 3}
 
 	want := `Lab 2
-0 waiting · started by Ivan
+В очереди: 0
 
-No one yet. Press + Join.`
+Пока никого. Нажмите «+ Записаться».`
 
 	if got := Board(q, names); got != want {
 		t.Errorf("Board() =\n%s\n\nwant\n%s", got, want)
@@ -58,7 +67,7 @@ func TestBoardClosed(t *testing.T) {
 	q := model.Queue{Name: "Practice 3", CreatedBy: 3, Closed: true, Entries: []model.Entry{{UserID: 3}}}
 
 	got := Board(q, names)
-	if !strings.HasPrefix(got, "Practice 3 (closed)\n") {
+	if !strings.HasPrefix(got, "Practice 3 (закрыта)\n") {
 		t.Errorf("Board() first line should mark the queue closed, got:\n%s", got)
 	}
 }
@@ -66,7 +75,7 @@ func TestBoardClosed(t *testing.T) {
 func TestBoardUnknownName(t *testing.T) {
 	q := model.Queue{Name: "Lab 2", CreatedBy: 3, Entries: []model.Entry{{UserID: 99}}}
 
-	if got := Board(q, names); !strings.Contains(got, "1. user 99") {
+	if got := Board(q, names); !strings.Contains(got, "1. пользователь 99") {
 		t.Errorf("Board() should fall back to the user ID, got:\n%s", got)
 	}
 }
@@ -84,19 +93,19 @@ func TestBoardFitsTelegramLimit(t *testing.T) {
 	if n := utf8.RuneCountInString(got); n > 4096 {
 		t.Fatalf("board is %d characters, Telegram allows 4096", n)
 	}
-	if !strings.Contains(got, "more") {
+	if !strings.Contains(got, "и ещё") {
 		t.Error("a cut list should say how many people are hidden")
 	}
-	if !strings.Contains(got, "Done: 100 people") {
+	if !strings.Contains(got, "Сдали: 100 чел.") {
 		t.Error("a long done list should be shortened to a count")
 	}
 }
 
 func TestName(t *testing.T) {
-	if got := Name(names, 1); got != "Anna Kuznetsova" {
-		t.Errorf("Name(known) = %q, want %q", got, "Anna Kuznetsova")
+	if got := Name(names, 1); got != "Анна Кузнецова" {
+		t.Errorf("Name(known) = %q, want %q", got, "Анна Кузнецова")
 	}
-	if got := Name(names, 99); got != "user 99" {
-		t.Errorf("Name(unknown) = %q, want %q", got, "user 99")
+	if got := Name(names, 99); got != "пользователь 99" {
+		t.Errorf("Name(unknown) = %q, want %q", got, "пользователь 99")
 	}
 }

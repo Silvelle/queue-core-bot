@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -178,5 +179,37 @@ func TestServiceConcurrentJoin(t *testing.T) {
 		if pos := got.Position(e.UserID); pos != i+1 {
 			t.Fatalf("user %d at position %d, want %d", e.UserID, pos, i+1)
 		}
+	}
+}
+
+// A database made by the previous version of the bot, like the one already
+// on a server, is upgraded on start and keeps its queues.
+func TestUpgradeFromVersion1(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "queue.db")
+
+	// Build a version 1 database by hand, the way the old bot left it.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(migrations[0] + `PRAGMA user_version = 1;`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO queues (chat_id, name, created_by, created_at) VALUES (10, 'Practice 4', 1, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	s := open(t, path)
+	queues, err := s.OpenQueues(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queues) != 1 || queues[0].Name != "Practice 4" {
+		t.Errorf("after upgrade: open queues = %+v, want Practice 4", queues)
+	}
+	if err := s.SetIndexMessage(ctx, 10, 5); err != nil {
+		t.Errorf("after upgrade, the new chats table doesn't work: %v", err)
 	}
 }

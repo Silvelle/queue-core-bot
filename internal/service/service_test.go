@@ -532,6 +532,7 @@ func TestClosedQueueRejectsChanges(t *testing.T) {
 		"setBoardMessage":  func() error { return s.SetBoardMessage(ctx, q.ID, 1) },
 		"done":             func() error { return s.Done(ctx, q.ID, 1) },
 		"close":            func() error { return s.Close(ctx, q.ID) },
+		"undo":             func() error { _, err := s.Undo(ctx, q.ID, 1); return err },
 	}
 	for name, op := range ops {
 		if err := op(); !errors.Is(err, model.ErrQueueClosed) {
@@ -644,9 +645,10 @@ func TestNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[int64]string{1: "Anna Kuznetsova", 2: "Ivan", 5: "@olga_v"}
+	// User 1 created the queue but isn't in it, and user 3 was never saved.
+	want := map[int64]string{2: "Ivan", 5: "@olga_v"}
 	if len(got) != len(want) {
-		t.Fatalf("Names() = %v, want %v (user 3 was never saved)", got, want)
+		t.Fatalf("Names() = %v, want %v", got, want)
 	}
 	for id, name := range want {
 		if got[id] != name {
@@ -676,5 +678,69 @@ func TestSaveUserUpdatesName(t *testing.T) {
 	}
 	if got[2] != "Ivan Tarasov" {
 		t.Errorf("name after rename = %q, want %q", got[2], "Ivan Tarasov")
+	}
+}
+
+func TestUndo(t *testing.T) {
+	tests := []struct {
+		name    string
+		user    int64
+		want    []int64
+		wantPos int
+		wantErr error
+	}{
+		// setup puts done users first, so 5 comes back as #1.
+		{"done user returns", 5, []int64{5, 1, 2, 3}, 1, nil},
+		{"still waiting", 2, []int64{1, 2, 3}, 0, model.ErrNotDone},
+		{"not in queue", 9, []int64{1, 2, 3}, 0, model.ErrNotInQueue},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
+			pos, err := s.Undo(context.Background(), qid, tt.user)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if pos != tt.wantPos {
+				t.Errorf("position = %d, want %d", pos, tt.wantPos)
+			}
+			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
+				t.Errorf("waiting = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Done then Undo puts the user back exactly where they were, even after
+// others joined behind them in the meantime.
+func TestDoneThenUndoRestoresPlace(t *testing.T) {
+	ctx := context.Background()
+	s, qid := setup(t, []int64{1, 2, 3}, nil)
+
+	if err := s.Done(ctx, qid, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Join(ctx, qid, 4); err != nil {
+		t.Fatal(err)
+	}
+	pos, err := s.Undo(ctx, qid, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos != 2 {
+		t.Errorf("position after undo = %d, want 2", pos)
+	}
+	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{1, 2, 3, 4}) {
+		t.Errorf("waiting = %v, want [1 2 3 4]", got)
+	}
+
+	q, err := s.Queue(ctx, qid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range q.Entries {
+		if e.UserID == 2 && !e.DoneAt.IsZero() {
+			t.Error("DoneAt should be cleared by Undo")
+		}
 	}
 }

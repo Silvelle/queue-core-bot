@@ -2,61 +2,96 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/go-telegram/bot"
 )
 
-// redrawDelay is how long the bot waits after a change before editing the
-// board. Telegram allows about 20 edits a minute in a group, so presses that
-// arrive close together are drawn with one edit.
-const redrawDelay = 1500 * time.Millisecond
-
-// redrawer edits each board at most once per delay. Schedule can be called
-// on every change; the draw that eventually runs loads the latest state,
-// so it includes every change made while waiting.
+// redrawer keeps boards up to date without delay. A change draws its board
+// at once. Changes that arrive while that board is being drawn are
+// collected and drawn together right after, which gives two guarantees:
+//
+//   - edits of one board never overlap, so an edit showing an older state
+//     can't reach Telegram after a newer one;
+//   - a burst of presses becomes two or three edits, not one per press.
 type redrawer struct {
-	ctx   context.Context
-	delay time.Duration
-	draw  func(ctx context.Context, queueID int64) error
+	ctx  context.Context
+	draw func(ctx context.Context, queueID int64) error
 
-	mu      sync.Mutex
-	pending map[int64]bool
+	mu sync.Mutex
+	// again holds the boards being drawn right now. The value is true if
+	// the board changed during the draw and must be drawn once more.
+	again map[int64]bool
 }
 
-func newRedrawer(ctx context.Context, delay time.Duration, draw func(context.Context, int64) error) *redrawer {
-	return &redrawer{
-		ctx:     ctx,
-		delay:   delay,
-		draw:    draw,
-		pending: make(map[int64]bool),
-	}
+func newRedrawer(ctx context.Context, draw func(context.Context, int64) error) *redrawer {
+	return &redrawer{ctx: ctx, draw: draw, again: make(map[int64]bool)}
 }
 
-// Schedule asks for the queue's board to be redrawn soon. Calls for a queue
-// that is already waiting to be redrawn are merged into that one redraw.
+// Schedule redraws the queue's board now, or right after the draw already
+// in progress.
 func (r *redrawer) Schedule(queueID int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.pending[queueID] {
+	if _, drawing := r.again[queueID]; drawing {
+		r.again[queueID] = true
 		return
 	}
-	r.pending[queueID] = true
+	r.again[queueID] = false
+	go r.run(queueID)
+}
 
-	time.AfterFunc(r.delay, func() {
-		// Clear the flag before drawing: a change that lands while the
-		// board is being drawn schedules one more redraw instead of
-		// being lost.
-		r.mu.Lock()
-		delete(r.pending, queueID)
-		r.mu.Unlock()
-
+// run draws the board until no change is left to show.
+func (r *redrawer) run(queueID int64) {
+	for {
 		if r.ctx.Err() != nil {
+			r.finish(queueID)
 			return
 		}
-		if err := r.draw(r.ctx, queueID); err != nil {
+
+		err := r.draw(r.ctx, queueID)
+		if wait, limited := retryAfter(err); limited {
+			// Telegram says how long to wait. The board is drawn again
+			// afterwards, so the change isn't lost.
+			log.Printf("redraw board of queue %d: rate limited, waiting %v", queueID, wait)
+			select {
+			case <-time.After(wait):
+			case <-r.ctx.Done():
+			}
+			r.mu.Lock()
+			r.again[queueID] = true
+			r.mu.Unlock()
+		} else if err != nil {
 			log.Printf("redraw board of queue %d: %v", queueID, err)
 		}
-	})
+
+		r.mu.Lock()
+		if !r.again[queueID] {
+			delete(r.again, queueID)
+			r.mu.Unlock()
+			return
+		}
+		r.again[queueID] = false
+		r.mu.Unlock()
+	}
+}
+
+func (r *redrawer) finish(queueID int64) {
+	r.mu.Lock()
+	delete(r.again, queueID)
+	r.mu.Unlock()
+}
+
+// retryAfter reports Telegram's "too many requests" answer and how long it
+// asks to wait.
+func retryAfter(err error) (time.Duration, bool) {
+	var tooMany *bot.TooManyRequestsError
+	if !errors.As(err, &tooMany) {
+		return 0, false
+	}
+	return time.Duration(tooMany.RetryAfter) * time.Second, true
 }

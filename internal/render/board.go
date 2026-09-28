@@ -16,37 +16,37 @@ func Name(names map[int64]string, id int64) string {
 	if n, ok := names[id]; ok {
 		return n
 	}
-	return fmt.Sprintf("user %d", id)
+	return fmt.Sprintf("пользователь %d", id)
 }
 
 // Board returns the text of a queue board. names maps user IDs to the names
 // to show, see Name.
 //
 //	Practice 4
-//	3 waiting · started by Anna Kuznetsova
+//	В очереди: 3
 //
 //	1. Михаил Петров
-//	2. Ivan
+//	2. Иван
 //	3. @dmitry_s
 //
-//	Done: Anna Kuznetsova
+//	Сдали: Анна Кузнецова
 func Board(q model.Queue, names map[int64]string) string {
 	var t text
 	t.write(q.Name)
 	if q.Closed {
-		t.write(" (closed)")
+		t.write(" (закрыта)")
 	}
 
 	waiting := q.Waiting()
-	t.write(fmt.Sprintf("\n%d waiting · started by %s\n\n", len(waiting), Name(names, q.CreatedBy)))
+	t.write(fmt.Sprintf("\nВ очереди: %d\n\n", len(waiting)))
 
 	if len(waiting) == 0 {
-		t.write("No one yet. Press + Join.")
+		t.write("Пока никого. Нажмите «+ Записаться».")
 	}
 	for i, e := range waiting {
 		line := fmt.Sprintf("%d. %s\n", i+1, Name(names, e.UserID))
 		if !t.fits(line) {
-			t.write(fmt.Sprintf("… and %d more\n", len(waiting)-i))
+			t.write(fmt.Sprintf("… и ещё %d\n", len(waiting)-i))
 			break
 		}
 		t.write(line)
@@ -59,9 +59,9 @@ func Board(q model.Queue, names map[int64]string) string {
 		}
 	}
 	if len(done) > 0 {
-		doneLine := "\nDone: " + strings.Join(done, ", ")
+		doneLine := "\nСдали: " + strings.Join(done, ", ")
 		if !t.fits(doneLine) {
-			doneLine = fmt.Sprintf("\nDone: %d people", len(done))
+			doneLine = fmt.Sprintf("\nСдали: %d чел.", len(done))
 		}
 		t.write(doneLine)
 	}

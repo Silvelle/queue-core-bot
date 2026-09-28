@@ -3,7 +3,9 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
 )
@@ -22,6 +24,7 @@ func TestEveryModelErrorHasText(t *testing.T) {
 		model.ErrInvalidPosition,
 		model.ErrSelfSwap,
 		model.ErrTargetNotInQueue,
+		model.ErrNotDone,
 	}
 	seen := make(map[string]error)
 	for _, err := range all {
@@ -55,9 +58,9 @@ func TestWhereText(t *testing.T) {
 		pos, total int
 		want       string
 	}{
-		{0, 5, "You're not in this queue."},
-		{1, 5, "You're #1 of 5. You're next!"},
-		{3, 7, "You're #3 of 7. 2 ahead of you."},
+		{0, 5, "Вас нет в этой очереди."},
+		{1, 5, "Вы №1 из 5. Сейчас ваша очередь!"},
+		{3, 7, "Вы №3 из 7. Перед вами: 2."},
 	}
 	for _, tt := range tests {
 		if got := whereText(tt.pos, tt.total); got != tt.want {
@@ -67,8 +70,8 @@ func TestWhereText(t *testing.T) {
 }
 
 func TestSwappedText(t *testing.T) {
-	got := swappedText("Practice 4", "Ivan Tarasov", "Olga Volkova", 3, 5)
-	want := "Practice 4: Ivan Tarasov #3 ⇄ Olga Volkova #5"
+	got := swappedText("Практика 4", "Иван Тарасов", "Ольга Волкова", 3, 5)
+	want := "Практика 4: Иван Тарасов №3 ⇄ Ольга Волкова №5"
 	if got != want {
 		t.Errorf("swappedText() = %q, want %q", got, want)
 	}
@@ -79,11 +82,11 @@ func TestClosedText(t *testing.T) {
 		waiting int
 		want    string
 	}{
-		{0, "Practice 4 is closed. Everyone has defended."},
-		{3, "Practice 4 is closed. 3 still waiting."},
+		{0, "Очередь «Практика 4» закрыта. Все сдали."},
+		{3, "Очередь «Практика 4» закрыта. Не успели: 3."},
 	}
 	for _, tt := range tests {
-		if got := closedText("Practice 4", tt.waiting); got != tt.want {
+		if got := closedText("Практика 4", tt.waiting); got != tt.want {
 			t.Errorf("closedText(%d) = %q, want %q", tt.waiting, got, tt.want)
 		}
 	}
@@ -108,5 +111,21 @@ func TestPickErrorText(t *testing.T) {
 				t.Errorf("pickErrorText() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFitAlert(t *testing.T) {
+	short := "Практика 4: вы №3 из 7"
+	if got := fitAlert(short); got != short {
+		t.Errorf("fitAlert(short) = %q, want it unchanged", got)
+	}
+
+	long := strings.Repeat("я", 300)
+	got := fitAlert(long)
+	if n := utf8.RuneCountInString(got); n != maxAlert {
+		t.Errorf("fitAlert(long) is %d characters, want %d", n, maxAlert)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Error("a cut alert should end with …")
 	}
 }

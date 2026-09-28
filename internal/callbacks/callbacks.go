@@ -20,11 +20,15 @@ const (
 	ToEnd Action = "e"
 	Done  Action = "x"
 	Where Action = "w"
+	// Undo takes back a Done.
+	Undo Action = "u"
+	// All lists the user's place in every open queue of the chat.
+	All Action = "a"
 )
 
 func (a Action) valid() bool {
 	switch a {
-	case Join, Leave, ToEnd, Done, Where:
+	case Join, Leave, ToEnd, Done, Where, Undo, All:
 		return true
 	}
 	return false
