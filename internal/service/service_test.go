@@ -600,17 +600,17 @@ func TestConcurrentMixedOperations(t *testing.T) {
 			for range 20 {
 				switch rand.IntN(6) {
 				case 0:
-					s.Join(ctx, qid, u)
+					_, _ = s.Join(ctx, qid, u)
 				case 1:
-					s.Leave(ctx, qid, u)
+					_ = s.Leave(ctx, qid, u)
 				case 2:
-					s.ToEnd(ctx, qid, u)
+					_, _ = s.ToEnd(ctx, qid, u)
 				case 3:
-					s.SwapWith(ctx, qid, u, users[rand.IntN(n)])
+					_, _ = s.SwapWith(ctx, qid, u, users[rand.IntN(n)])
 				case 4:
-					s.SwapWithPosition(ctx, qid, u, rand.IntN(n)+1)
+					_, _ = s.SwapWithPosition(ctx, qid, u, rand.IntN(n)+1)
 				case 5:
-					s.Done(ctx, qid, u)
+					_ = s.Done(ctx, qid, u)
 				}
 			}
 		})
