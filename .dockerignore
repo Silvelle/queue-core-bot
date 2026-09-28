@@ -1,0 +1,13 @@
+# Only what the build needs goes into the Docker build context.
+.git
+.github
+.idea
+.vscode
+.env
+data
+*.db
+*.db-shm
+*.db-wal
+/queue-core-bot
+/bin
+coverage.out
