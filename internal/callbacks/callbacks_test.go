@@ -96,7 +96,6 @@ func TestDecodeInvalid(t *testing.T) {
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("Decode(%q) error = %v, want ErrInvalid", tt.data, err)
 			}
-			// A rejected input must not leak a half-parsed result.
 			if id != 0 || a != "" {
 				t.Errorf("Decode(%q) = %d, %q with an error, want zero values", tt.data, id, a)
 			}
