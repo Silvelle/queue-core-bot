@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strconv"
+	"sync"
 
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
 	"github.com/Silvelle/queue-core-bot/internal/keyboard"
@@ -20,6 +21,7 @@ type Handler struct {
 	svc         *service.Service
 	botUsername string
 	redraw      *redrawer
+	repostMu    sync.Mutex
 }
 
 // New creates the handler. ctx is the bot's lifetime: pending board redraws
@@ -38,6 +40,7 @@ func (h *Handler) Register(ctx context.Context) {
 	h.groupCommand("swap", h.swap)
 	h.groupCommand("close", h.closeQueue)
 	h.groupCommand("queues", h.queues)
+	h.groupCommand("show", h.show)
 	h.b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "b:", bot.MatchTypePrefix, h.boardPress)
 
 	_, err := h.b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
@@ -46,6 +49,7 @@ func (h *Handler) Register(ctx context.Context) {
 			{Command: "swap", Description: "Поменяться местами"},
 			{Command: "close", Description: "Закрыть очередь"},
 			{Command: "queues", Description: "Список открытых очередей"},
+			{Command: "show", Description: "Показать доску очереди внизу чата"},
 			{Command: "help", Description: "Как пользоваться ботом"},
 		},
 	})
@@ -110,11 +114,7 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 		h.replyError(ctx, msg, "draw new board", err)
 		return
 	}
-	board, err := h.b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      q.ChatID,
-		Text:        text,
-		ReplyMarkup: keyboard.Board(q.ID),
-	})
+	board, err := h.send(ctx, q.ChatID, text, keyboard.Board(q.ID))
 	if err != nil {
 		log.Printf("post board of queue %d: %v", q.ID, err)
 		return
@@ -202,10 +202,20 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
+	q, err := h.svc.Queue(ctx, queueID)
+	if err != nil {
+		h.toast(ctx, cq, badButtonText)
+		return
+	}
+
+	if action == callbacks.Show {
+		h.showPress(ctx, cq, q)
+		return
+	}
+
 	// The data can be forged, so check the button really sits under this
 	// queue's board in this chat.
-	q, err := h.svc.Queue(ctx, queueID)
-	if err != nil || !pressedOnBoard(cq, q) {
+	if !pressedOnBoard(cq, q) {
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
@@ -215,6 +225,26 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 	if ans.redraw {
 		h.redraw.Schedule(queueID)
 	}
+}
+
+// showPress handles a queue's button in the chat's list of queues: it posts
+// that queue's board again at the bottom of the chat.
+func (h *Handler) showPress(ctx context.Context, cq *models.CallbackQuery, q model.Queue) {
+	// As with board buttons, only a button that really sits under this
+	// chat's list counts.
+	msg := cq.Message.Message
+	indexID, err := h.svc.IndexMessage(ctx, q.ChatID)
+	if err != nil || msg == nil || msg.Chat.ID != q.ChatID || msg.ID != indexID {
+		h.toast(ctx, cq, badButtonText)
+		return
+	}
+
+	if err := h.repostBoard(ctx, q.ID); err != nil {
+		h.toast(ctx, cq, h.userError(err, "repost board of queue %d", q.ID))
+		return
+	}
+	// An empty answer just stops the button's loading spinner.
+	h.toast(ctx, cq, "")
 }
 
 // answer is how the bot responds to a board button.

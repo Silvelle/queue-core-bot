@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-var allActions = []Action{Join, Leave, ToEnd, Done, Where, Undo, All}
+var allActions = []Action{Join, Leave, ToEnd, Done, Where, Undo, All, Show}
 
 // Whatever Encode writes, Decode must read back exactly.
 func TestRoundTrip(t *testing.T) {
@@ -37,6 +37,7 @@ func TestEncodeFormat(t *testing.T) {
 		{42, Where, "b:42:w"},
 		{42, Undo, "b:42:u"},
 		{42, All, "b:42:a"},
+		{42, Show, "b:42:s"},
 		{7, Join, "b:7:j"},
 	}
 	for _, tt := range tests {

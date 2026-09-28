@@ -24,11 +24,14 @@ const (
 	Undo Action = "u"
 	// All lists the user's place in every open queue of the chat.
 	All Action = "a"
+	// Show posts the queue's board again at the bottom of the chat. It's
+	// pressed from the list of queues, not from the board itself.
+	Show Action = "s"
 )
 
 func (a Action) valid() bool {
 	switch a {
-	case Join, Leave, ToEnd, Done, Where, Undo, All:
+	case Join, Leave, ToEnd, Done, Where, Undo, All, Show:
 		return true
 	}
 	return false

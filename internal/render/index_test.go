@@ -15,21 +15,18 @@ var (
 
 func TestIndex(t *testing.T) {
 	tests := []struct {
-		name  string
-		open  []model.Queue
-		links bool
-		want  string
+		name string
+		open []model.Queue
+		want string
 	}{
-		{"with links", []model.Queue{practice, lab}, true,
-			"Открытые очереди:\n\n• Practice 4\n• Lab 2\n\nНажмите на очередь, чтобы перейти к её доске."},
-		{"without links", []model.Queue{practice}, false,
-			"Открытые очереди:\n\n• Practice 4"},
-		{"empty", nil, true,
+		{"two queues", []model.Queue{practice, lab},
+			"Открытые очереди:\n\n• Practice 4\n• Lab 2\n\nНажмите на очередь, чтобы показать её доску внизу чата."},
+		{"empty", nil,
 			"Открытых очередей нет.\nСоздайте новую: /new <название>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Index(tt.open, tt.links); got != tt.want {
+			if got := Index(tt.open); got != tt.want {
 				t.Errorf("Index() =\n%s\n\nwant\n%s", got, tt.want)
 			}
 		})

@@ -10,7 +10,7 @@ import (
 // Index returns the text of the chat's list of open queues. The list
 // doesn't show how many people are in each queue, so it only changes when
 // a queue is opened or closed, not on every press.
-func Index(open []model.Queue, links bool) string {
+func Index(open []model.Queue) string {
 	if len(open) == 0 {
 		return "Открытых очередей нет.\nСоздайте новую: /new <название>"
 	}
@@ -20,9 +20,7 @@ func Index(open []model.Queue, links bool) string {
 	for _, q := range open {
 		b.WriteString("\n• " + q.Name)
 	}
-	if links {
-		b.WriteString("\n\nНажмите на очередь, чтобы перейти к её доске.")
-	}
+	b.WriteString("\n\nНажмите на очередь, чтобы показать её доску внизу чата.")
 	return b.String()
 }
 

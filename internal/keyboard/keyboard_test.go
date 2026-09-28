@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
+	"github.com/Silvelle/queue-core-bot/internal/model"
 )
 
 var wantText = map[callbacks.Action]string{
@@ -72,40 +73,25 @@ func TestBoardButtonsDecode(t *testing.T) {
 	}
 }
 
-func TestLinks(t *testing.T) {
-	kb := Links([]Link{
-		{Text: "Practice 4", URL: "https://t.me/c/123/10"},
-		{Text: "Lab 2", URL: "https://t.me/c/123/20"},
-	})
+func TestIndex(t *testing.T) {
+	kb := Index([]model.Queue{{ID: 1, Name: "Практика 4"}, {ID: 2, Name: "Лаб 2"}})
 	if len(kb.InlineKeyboard) != 2 {
-		t.Fatalf("%d rows, want one per link", len(kb.InlineKeyboard))
+		t.Fatalf("%d rows, want one per queue", len(kb.InlineKeyboard))
 	}
-	btn := kb.InlineKeyboard[1][0]
-	if btn.Text != "Lab 2" || btn.URL != "https://t.me/c/123/20" || btn.CallbackData != "" {
-		t.Errorf("second button = %+v, want a plain link to Lab 2", btn)
+	for i, wantID := range []int64{1, 2} {
+		btn := kb.InlineKeyboard[i][0]
+		id, a, err := callbacks.Decode(btn.CallbackData)
+		if err != nil || id != wantID || a != callbacks.Show {
+			t.Errorf("button %q = %q, want Show for queue %d", btn.Text, btn.CallbackData, wantID)
+		}
+	}
+	if kb.InlineKeyboard[1][0].Text != "Лаб 2" {
+		t.Errorf("second button = %q, want the queue's name", kb.InlineKeyboard[1][0].Text)
 	}
 }
 
-func TestMessageURL(t *testing.T) {
-	tests := []struct {
-		name   string
-		chatID int64
-		msgID  int
-		want   string
-		wantOK bool
-	}{
-		{"supergroup", -1001234567890, 42, "https://t.me/c/1234567890/42", true},
-		{"basic group", -123456, 42, "", false},
-		{"private chat", 123456, 42, "", false},
-		{"no message yet", -1001234567890, 0, "", false},
-		{"only the prefix", -100, 42, "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := MessageURL(tt.chatID, tt.msgID)
-			if got != tt.want || ok != tt.wantOK {
-				t.Errorf("MessageURL(%d, %d) = %q, %v, want %q, %v", tt.chatID, tt.msgID, got, ok, tt.want, tt.wantOK)
-			}
-		})
+func TestIndexEmpty(t *testing.T) {
+	if kb := Index(nil); kb == nil || len(kb.InlineKeyboard) != 0 {
+		t.Errorf("Index(nil) = %+v, want an empty keyboard", kb)
 	}
 }
