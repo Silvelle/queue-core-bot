@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    image: queue-core-bot
+    restart: unless-stopped
+    # BOT_TOKEN comes from .env, which is never committed.
+    env_file: .env
+    volumes:
+      - bot-data:/data
+    stop_grace_period: 10s
+
+volumes:
+  bot-data:
