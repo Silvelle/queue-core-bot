@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -253,4 +254,40 @@ func (s *Service) Close(ctx context.Context, queueID int64) error {
 		return nil
 	})
 	return err
+}
+
+// SaveUser stores the user's current names. Handlers call it on every
+// update, so renamed users show up with their new name.
+func (s *Service) SaveUser(ctx context.Context, u model.User) error {
+	return s.store.SaveUser(ctx, u)
+}
+
+// Names returns the full name of everyone in the queue, including whoever
+// created it, for drawing the board. Users the bot never saw are left out.
+func (s *Service) Names(ctx context.Context, q model.Queue) (map[int64]string, error) {
+	names := make(map[int64]string, len(q.Entries)+1)
+	add := func(id int64) error {
+		if _, ok := names[id]; ok {
+			return nil
+		}
+		u, err := s.store.User(ctx, id)
+		if errors.Is(err, model.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		names[id] = u.FullName()
+		return nil
+	}
+
+	if err := add(q.CreatedBy); err != nil {
+		return nil, err
+	}
+	for _, e := range q.Entries {
+		if err := add(e.UserID); err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
 }

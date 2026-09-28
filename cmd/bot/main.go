@@ -9,6 +9,8 @@ import (
 
 	"github.com/Silvelle/queue-core-bot/internal/config"
 	"github.com/Silvelle/queue-core-bot/internal/handler"
+	"github.com/Silvelle/queue-core-bot/internal/service"
+	"github.com/Silvelle/queue-core-bot/internal/storage/memory"
 	"github.com/go-telegram/bot"
 )
 
@@ -26,9 +28,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	handler.New().Register(b)
+	me, err := b.GetMe(ctx)
+	if err != nil {
+		log.Fatalf("get bot info: %v", err)
+	}
 
-	log.Println("bot started")
+	svc := service.New(memory.New())
+	handler.New(ctx, b, svc, me.Username).Register(ctx)
+
+	log.Printf("bot @%s started", me.Username)
 	b.Start(ctx)
 	log.Println("bot stopped")
 }
