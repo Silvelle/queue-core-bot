@@ -14,4 +14,5 @@ var (
 	ErrInvalidPosition  = errors.New("no one is at this position")
 	ErrSelfSwap         = errors.New("cannot swap with yourself")
 	ErrTargetNotInQueue = errors.New("the other user is not waiting in the queue")
+	ErrNotDone          = errors.New("user has not defended in this queue")
 )

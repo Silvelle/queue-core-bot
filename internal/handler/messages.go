@@ -8,44 +8,48 @@ import (
 )
 
 const (
-	helpText = `I keep queues for defenses in this chat.
+	helpText = `Я веду очереди на защиту в этом чате.
 
-/new <name> — start a queue, for example /new Practice 4
-/swap <position> — swap places with whoever is at that position
-/close <name> — close a queue when the defense is over
+/new <название> — создать очередь, например /new Практика 4
+/swap <номер> — поменяться местами с тем, кто стоит на этом месте
+/close <название> — закрыть очередь
+/queues — список открытых очередей
+/show <название> — показать доску очереди внизу чата
 
-Then use the buttons under the queue:
-+ Join, Leave, To end, ✓ Done, Where am I?
+Кнопки под очередью действуют только на того, кто их нажал.
+«↩ Сброс» возвращает на прежнее место, если вы нажали «✓ Сдано» по ошибке.
 
-With several queues open, send /swap or /close as a reply to the queue's board.`
+Если открыто несколько очередей, отправляйте /swap и /close ответом на доску нужной.`
 
-	privateChatText = "Queues live in group chats. Add me to your group and send /new <name> there."
-	newUsageText    = "Give the queue a name, for example /new Practice 4"
-	badButtonText   = "This button no longer works."
-	genericErrText  = "Something went wrong. Try again."
+	privateChatText = "Очереди работают в групповых чатах. Добавьте меня в группу и отправьте там /new <название>."
+	newUsageText    = "Укажите название, например /new Практика 4"
+	badButtonText   = "Эта кнопка больше не работает."
+	genericErrText  = "Что-то пошло не так. Попробуйте ещё раз."
 
-	swapUsageText   = "Say who to swap with by position, for example /swap 5"
-	closeUsageText  = "Name the queue, for example /close Practice 4, or send /close as a reply to its board."
-	noQueuesText    = "There are no open queues here. Start one with /new <name>"
-	whichQueueText  = "Several queues are open. Send the command as a reply to the board of the one you mean."
-	noSuchQueueText = "There's no open queue with that name here."
+	swapUsageText   = "Укажите номер места, например /swap 5"
+	closeUsageText  = "Укажите очередь, например /close Практика 4, или отправьте /close ответом на её доску."
+	noQueuesText    = "Здесь нет открытых очередей. Создайте: /new <название>"
+	whichQueueText  = "Открыто несколько очередей. Отправьте команду ответом на доску нужной."
+	noSuchQueueText = "Здесь нет открытой очереди с таким названием."
+	showUsageText   = "Укажите очередь, например /show Практика 4, или отправьте /show ответом на её доску."
 
-	leftText = "You left the queue."
-	doneText = "Marked as done. Good luck!"
+	leftText = "Вы вышли из очереди."
+	doneText = "Отмечено: сдано. Если по ошибке, нажмите «↩ Сброс»."
 )
 
 // errorTexts is what a person sees for each rule the service enforces.
 var errorTexts = map[error]string{
-	model.ErrNotFound:         "This queue no longer exists.",
-	model.ErrQueueClosed:      "This queue is closed.",
-	model.ErrAlreadyJoined:    "You're already in the queue.",
-	model.ErrAlreadyDone:      "You've already defended in this queue.",
-	model.ErrNotInQueue:       "You're not in this queue. Press + Join first.",
-	model.ErrQueueExists:      "A queue with this name is already open here.",
-	model.ErrInvalidName:      "The name must be 1 to 64 characters.",
-	model.ErrInvalidPosition:  "No one is at that position.",
-	model.ErrSelfSwap:         "You can't swap with yourself.",
-	model.ErrTargetNotInQueue: "That person isn't waiting in the queue.",
+	model.ErrNotFound:         "Этой очереди больше нет.",
+	model.ErrQueueClosed:      "Очередь закрыта.",
+	model.ErrAlreadyJoined:    "Вы уже в очереди.",
+	model.ErrAlreadyDone:      "Вы уже сдали в этой очереди. Если по ошибке, нажмите «↩ Сброс».",
+	model.ErrNotInQueue:       "Вас нет в этой очереди. Сначала нажмите «+ Записаться».",
+	model.ErrQueueExists:      "Очередь с таким названием уже открыта.",
+	model.ErrInvalidName:      "Название должно быть от 1 до 64 символов.",
+	model.ErrInvalidPosition:  "На этом месте никого нет.",
+	model.ErrSelfSwap:         "Нельзя поменяться местами с самим собой.",
+	model.ErrTargetNotInQueue: "Этого человека нет среди ожидающих.",
+	model.ErrNotDone:          "Вы ещё не отмечали «Сдано».",
 }
 
 // errorText turns a service error into a short message. known is false for
@@ -60,30 +64,37 @@ func errorText(err error) (text string, known bool) {
 	return genericErrText, false
 }
 
-func joinedText(pos int) string { return fmt.Sprintf("Joined. You're #%d.", pos) }
-func toEndText(pos int) string  { return fmt.Sprintf("Moved to the end. You're #%d.", pos) }
+func joinedText(pos int) string {
+	return fmt.Sprintf("Вы записались. Ваше место: №%d.", pos)
+}
+func toEndText(pos int) string {
+	return fmt.Sprintf("Вы перешли в конец. Ваше место: №%d.", pos)
+}
+func undoText(pos int) string {
+	return fmt.Sprintf("Отметка снята. Ваше место: №%d.", pos)
+}
 
 func whereText(pos, total int) string {
 	if pos == 0 {
-		return "You're not in this queue."
+		return "Вас нет в этой очереди."
 	}
 	if pos == 1 {
-		return fmt.Sprintf("You're #1 of %d. You're next!", total)
+		return fmt.Sprintf("Вы №1 из %d. Сейчас ваша очередь!", total)
 	}
-	return fmt.Sprintf("You're #%d of %d. %d ahead of you.", pos, total, pos-1)
+	return fmt.Sprintf("Вы №%d из %d. Перед вами: %d.", pos, total, pos-1)
 }
 
 // swappedText is the public line posted after a swap, so everyone can see
 // who moved whom. Positions are the ones before the swap.
 func swappedText(queue, user, target string, from, to int) string {
-	return fmt.Sprintf("%s: %s #%d ⇄ %s #%d", queue, user, from, target, to)
+	return fmt.Sprintf("%s: %s №%d ⇄ %s №%d", queue, user, from, target, to)
 }
 
 func closedText(queue string, waiting int) string {
 	if waiting == 0 {
-		return fmt.Sprintf("%s is closed. Everyone has defended.", queue)
+		return fmt.Sprintf("Очередь «%s» закрыта. Все сдали.", queue)
 	}
-	return fmt.Sprintf("%s is closed. %d still waiting.", queue, waiting)
+	return fmt.Sprintf("Очередь «%s» закрыта. Не успели: %d.", queue, waiting)
 }
 
 // pickErrorText explains why pickQueue couldn't find the queue a command

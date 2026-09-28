@@ -6,7 +6,7 @@ import (
 )
 
 // User is a Telegram user the bot has seen. It is refreshed on every
-// interaction, because people change their names
+// interaction, because people change their names.
 type User struct {
 	ID        int64
 	FirstName string
@@ -30,17 +30,11 @@ func (u User) FullName() string {
 }
 
 // DisplayName returns a short name for places with little room, such as
-// buttons, like "Anna K.". It falls back the same way as FullName.
+// buttons, like "Anna K.". Without a last name it's the same as FullName.
 func (u User) DisplayName() string {
-	switch {
-	case u.FirstName != "" && u.LastName != "":
+	if u.FirstName != "" && u.LastName != "" {
 		r, _ := utf8.DecodeRuneInString(u.LastName)
 		return u.FirstName + " " + string(r) + "."
-	case u.FirstName != "":
-		return u.FirstName
-	case u.Username != "":
-		return "@" + u.Username
-	default:
-		return "user " + strconv.FormatInt(u.ID, 10)
 	}
+	return u.FullName()
 }

@@ -3,39 +3,67 @@ package handler
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-telegram/bot"
 )
 
-const testDelay = 20 * time.Millisecond
+// fakeDraw stands in for editing the board. Each draw waits for a value on
+// release when blocking is on, so a test can hold a draw "in progress".
+type fakeDraw struct {
+	mu       sync.Mutex
+	counts   map[int64]int
+	calls    chan int64
+	release  chan struct{}
+	blocking bool
 
-// countingDraw records every draw per queue and signals each one.
-type countingDraw struct {
-	mu     sync.Mutex
-	counts map[int64]int
-	calls  chan int64
+	running, maxRunning atomic.Int32
+	failFirst           error
 }
 
-func newCountingDraw() *countingDraw {
-	return &countingDraw{counts: make(map[int64]int), calls: make(chan int64, 100)}
+func newFakeDraw() *fakeDraw {
+	return &fakeDraw{
+		counts:  make(map[int64]int),
+		calls:   make(chan int64, 100),
+		release: make(chan struct{}),
+	}
 }
 
-func (d *countingDraw) draw(_ context.Context, queueID int64) error {
+func (d *fakeDraw) draw(_ context.Context, queueID int64) error {
+	n := d.running.Add(1)
+	defer d.running.Add(-1)
+	for {
+		old := d.maxRunning.Load()
+		if n <= old || d.maxRunning.CompareAndSwap(old, n) {
+			break
+		}
+	}
+
 	d.mu.Lock()
 	d.counts[queueID]++
+	first := d.counts[queueID] == 1
+	blocking := d.blocking
 	d.mu.Unlock()
+
 	d.calls <- queueID
+	if blocking {
+		<-d.release
+	}
+	if first && d.failFirst != nil {
+		return d.failFirst
+	}
 	return nil
 }
 
-func (d *countingDraw) count(queueID int64) int {
+func (d *fakeDraw) count(queueID int64) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.counts[queueID]
 }
 
-// waitDraw waits for the next draw, failing the test if none comes.
-func (d *countingDraw) waitDraw(t *testing.T) int64 {
+func (d *fakeDraw) waitDraw(t *testing.T) int64 {
 	t.Helper()
 	select {
 	case id := <-d.calls:
@@ -46,34 +74,52 @@ func (d *countingDraw) waitDraw(t *testing.T) int64 {
 	}
 }
 
-// settle waits long enough that any redraw still scheduled would have run.
-func settle() { time.Sleep(5 * testDelay) }
+// settle gives any stray redraw time to show up.
+func settle() { time.Sleep(50 * time.Millisecond) }
 
-// 15 people press Join at once: the board is edited once, not 15 times.
-func TestRedrawMergesBurst(t *testing.T) {
-	d := newCountingDraw()
-	r := newRedrawer(context.Background(), testDelay, d.draw)
+// A single press is drawn at once, with no waiting.
+func TestRedrawIsImmediate(t *testing.T) {
+	d := newFakeDraw()
+	r := newRedrawer(context.Background(), d.draw)
 
-	for range 15 {
-		r.Schedule(42)
-	}
+	start := time.Now()
+	r.Schedule(42)
 	d.waitDraw(t)
-	settle()
-
-	if got := d.count(42); got != 1 {
-		t.Errorf("%d redraws, want 1", got)
+	if since := time.Since(start); since > 50*time.Millisecond {
+		t.Errorf("redraw took %v, want no delay", since)
 	}
 }
 
-// A change after a redraw has run gets a redraw of its own.
-func TestRedrawAgainAfterDraw(t *testing.T) {
-	d := newCountingDraw()
-	r := newRedrawer(context.Background(), testDelay, d.draw)
+// Presses one after another, like Сдано then Сброс, each get their own
+// redraw right away.
+func TestRedrawEveryPress(t *testing.T) {
+	d := newFakeDraw()
+	r := newRedrawer(context.Background(), d.draw)
+
+	for range 3 {
+		r.Schedule(42)
+		d.waitDraw(t)
+		settle()
+	}
+	if got := d.count(42); got != 3 {
+		t.Errorf("%d redraws for 3 separate presses, want 3", got)
+	}
+}
+
+// 15 presses while a draw is in progress become one more draw, not 15.
+func TestRedrawMergesBurst(t *testing.T) {
+	d := newFakeDraw()
+	d.blocking = true
+	r := newRedrawer(context.Background(), d.draw)
 
 	r.Schedule(42)
-	d.waitDraw(t)
-	r.Schedule(42)
-	d.waitDraw(t)
+	d.waitDraw(t) // first draw is now in progress
+	for range 15 {
+		r.Schedule(42)
+	}
+	d.release <- struct{}{}
+	d.waitDraw(t) // the one merged draw
+	d.release <- struct{}{}
 	settle()
 
 	if got := d.count(42); got != 2 {
@@ -81,46 +127,63 @@ func TestRedrawAgainAfterDraw(t *testing.T) {
 	}
 }
 
-// Different boards don't wait for each other.
+// Edits of one board never overlap, so an old state can't land last.
+func TestRedrawNeverOverlaps(t *testing.T) {
+	d := newFakeDraw()
+	r := newRedrawer(context.Background(), d.draw)
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() { r.Schedule(42) })
+	}
+	wg.Wait()
+	settle()
+
+	if got := d.maxRunning.Load(); got != 1 {
+		t.Errorf("%d draws of the same board ran at once, want 1", got)
+	}
+}
+
+// Different boards are drawn independently.
 func TestRedrawQueuesAreIndependent(t *testing.T) {
-	d := newCountingDraw()
-	r := newRedrawer(context.Background(), testDelay, d.draw)
+	d := newFakeDraw()
+	d.blocking = true
+	r := newRedrawer(context.Background(), d.draw)
 
 	r.Schedule(1)
+	d.waitDraw(t) // board 1 is held in progress
 	r.Schedule(2)
-	r.Schedule(1)
+	d.waitDraw(t) // board 2 isn't blocked by board 1
+	d.release <- struct{}{}
+	d.release <- struct{}{}
+}
+
+// After Telegram's "too many requests", the board is drawn again, so the
+// change isn't lost.
+func TestRedrawRetriesWhenRateLimited(t *testing.T) {
+	d := newFakeDraw()
+	d.failFirst = &bot.TooManyRequestsError{Message: "too many requests", RetryAfter: 0}
+	r := newRedrawer(context.Background(), d.draw)
+
+	r.Schedule(42)
 	d.waitDraw(t)
 	d.waitDraw(t)
 	settle()
 
-	if d.count(1) != 1 || d.count(2) != 1 {
-		t.Errorf("redraws = %d for queue 1 and %d for queue 2, want 1 each", d.count(1), d.count(2))
+	if got := d.count(42); got != 2 {
+		t.Errorf("%d redraws, want the failed one plus a retry", got)
 	}
 }
 
-// Nothing is drawn before the delay has passed.
-func TestRedrawWaitsForDelay(t *testing.T) {
-	d := newCountingDraw()
-	r := newRedrawer(context.Background(), 200*time.Millisecond, d.draw)
-
-	r.Schedule(42)
-	time.Sleep(50 * time.Millisecond)
-	if got := d.count(42); got != 0 {
-		t.Errorf("redrew after 50ms, want to wait 200ms")
-	}
-}
-
-// After the bot stops, pending redraws are dropped instead of calling
-// Telegram with a cancelled context.
+// After the bot stops, nothing is drawn with a cancelled context.
 func TestRedrawSkippedAfterShutdown(t *testing.T) {
-	d := newCountingDraw()
+	d := newFakeDraw()
 	ctx, cancel := context.WithCancel(context.Background())
-	r := newRedrawer(ctx, testDelay, d.draw)
+	cancel()
+	r := newRedrawer(ctx, d.draw)
 
 	r.Schedule(42)
-	cancel()
 	settle()
-
 	if got := d.count(42); got != 0 {
 		t.Errorf("%d redraws after shutdown, want 0", got)
 	}

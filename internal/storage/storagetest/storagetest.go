@@ -30,6 +30,7 @@ func Run(t *testing.T, newStore func(t *testing.T) storage.Storage) {
 		{"OpenQueues", testOpenQueues},
 		{"QueueIsCopied", testQueueIsCopied},
 		{"ConcurrentCreate", testConcurrentCreate},
+		{"IndexMessage", testIndexMessage},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -250,6 +251,39 @@ func testConcurrentCreate(t *testing.T, s storage.Storage) {
 		}
 		seen[id] = true
 	}
+}
+
+func testIndexMessage(t *testing.T, s storage.Storage) {
+	ctx := context.Background()
+
+	check := func(chatID int64, want int) {
+		t.Helper()
+		got, err := s.IndexMessage(ctx, chatID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("IndexMessage(%d) = %d, want %d", chatID, got, want)
+		}
+	}
+
+	check(10, 0)
+	if err := s.SetIndexMessage(ctx, 10, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetIndexMessage(ctx, 20, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetIndexMessage(ctx, 10, 101); err != nil {
+		t.Fatal(err)
+	}
+	check(10, 101)
+	check(20, 200)
+
+	if err := s.SetIndexMessage(ctx, 10, 0); err != nil {
+		t.Fatal(err)
+	}
+	check(10, 0)
 }
 
 // assertQueue compares queues field by field. Times are compared with Equal,
