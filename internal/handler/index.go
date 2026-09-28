@@ -49,7 +49,7 @@ func (h *Handler) refreshIndex(ctx context.Context, chatID int64, repost bool) e
 		return err
 	}
 	if oldID != 0 {
-		h.retire(ctx, chatID, oldID, movedListText)
+		h.retire(ctx, chatID, oldID)
 	}
 
 	// Pinning only works when the bot is an admin. Without that right the
@@ -119,19 +119,18 @@ func (h *Handler) repostBoard(ctx context.Context, queueID int64) error {
 		return err
 	}
 	if q.BoardMsgID != 0 {
-		h.retire(ctx, q.ChatID, q.BoardMsgID, movedText)
+		h.retire(ctx, q.ChatID, q.BoardMsgID)
 	}
 	return nil
 }
 
-// retire marks an old copy of a message the bot has replaced: its text
-// becomes movedText and its buttons go, so nobody presses stale buttons.
-// The old copy is kept, not deleted, so nothing disappears from the chat.
-func (h *Handler) retire(ctx context.Context, chatID int64, msgID int, movedText string) {
-	_, _ = h.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+// retire takes the buttons off an old copy of a message the bot has
+// replaced, so nobody presses stale buttons. Its text stays as it was, and
+// the message isn't deleted, so nothing in the chat changes or disappears.
+func (h *Handler) retire(ctx context.Context, chatID int64, msgID int) {
+	_, _ = h.b.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
 		ChatID:      chatID,
 		MessageID:   msgID,
-		Text:        movedText,
 		ReplyMarkup: noButtons(),
 	})
 }
