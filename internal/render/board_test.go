@@ -91,3 +91,12 @@ func TestBoardFitsTelegramLimit(t *testing.T) {
 		t.Error("a long done list should be shortened to a count")
 	}
 }
+
+func TestName(t *testing.T) {
+	if got := Name(names, 1); got != "Anna Kuznetsova" {
+		t.Errorf("Name(known) = %q, want %q", got, "Anna Kuznetsova")
+	}
+	if got := Name(names, 99); got != "user 99" {
+		t.Errorf("Name(unknown) = %q, want %q", got, "user 99")
+	}
+}
