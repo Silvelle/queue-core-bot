@@ -37,11 +37,11 @@ func Where(open []model.Queue, userID int64) string {
 
 	lines := make([]string, 0, len(open))
 	for _, q := range open {
-		waiting := len(q.Waiting())
+		waiting, pos := len(q.Waiting()), q.Position(userID)
 		var status string
 		switch {
-		case q.Position(userID) > 0:
-			status = fmt.Sprintf("вы №%d из %d", q.Position(userID), waiting)
+		case pos > 0:
+			status = fmt.Sprintf("вы №%d из %d", pos, waiting)
 		case q.Has(userID):
 			status = "сдано"
 		default:

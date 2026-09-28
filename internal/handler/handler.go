@@ -213,9 +213,7 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 		return
 	}
 
-	// The data can be forged, so check the button really sits under this
-	// queue's board in this chat.
-	if !pressedOnBoard(cq, q) {
+	if !pressedOn(cq, q.ChatID, q.BoardMsgID) {
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
@@ -232,9 +230,8 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 func (h *Handler) showPress(ctx context.Context, cq *models.CallbackQuery, q model.Queue) {
 	// As with board buttons, only a button that really sits under this
 	// chat's list counts.
-	msg := cq.Message.Message
 	indexID, err := h.svc.IndexMessage(ctx, q.ChatID)
-	if err != nil || msg == nil || msg.Chat.ID != q.ChatID || msg.ID != indexID {
+	if err != nil || !pressedOn(cq, q.ChatID, indexID) {
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
@@ -261,25 +258,23 @@ type answer struct {
 func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action callbacks.Action) answer {
 	var (
 		text string
+		pos  int
 		err  error
 	)
 	switch action {
 	case callbacks.Join:
-		var pos int
 		pos, err = h.svc.Join(ctx, q.ID, userID)
 		text = joinedText(pos)
 	case callbacks.Leave:
 		err = h.svc.Leave(ctx, q.ID, userID)
 		text = leftText
 	case callbacks.ToEnd:
-		var pos int
 		pos, err = h.svc.ToEnd(ctx, q.ID, userID)
 		text = toEndText(pos)
 	case callbacks.Done:
 		err = h.svc.Done(ctx, q.ID, userID)
 		text = doneText
 	case callbacks.Undo:
-		var pos int
 		pos, err = h.svc.Undo(ctx, q.ID, userID)
 		text = undoText(pos)
 	case callbacks.Where:
@@ -298,10 +293,12 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	return answer{text: text, redraw: true}
 }
 
-// pressedOnBoard reports whether the pressed button is under q's board.
-func pressedOnBoard(cq *models.CallbackQuery, q model.Queue) bool {
+// pressedOn reports whether the pressed button sits under the given message.
+// Button data can be forged, so every press is checked against the message
+// the button really belongs to.
+func pressedOn(cq *models.CallbackQuery, chatID int64, msgID int) bool {
 	msg := cq.Message.Message
-	return msg != nil && msg.Chat.ID == q.ChatID && msg.ID == q.BoardMsgID
+	return msg != nil && msg.Chat.ID == chatID && msg.ID == msgID
 }
 
 // drawBoard edits the board message to show the queue's current state.
@@ -329,13 +326,18 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 	return err
 }
 
-// boardMarkup returns the buttons under a board. A closed queue gets an
-// empty keyboard, which removes the buttons from the message.
+// boardMarkup returns the buttons under a board. A closed queue has none.
 func boardMarkup(q model.Queue) *models.InlineKeyboardMarkup {
 	if q.Closed {
-		return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+		return noButtons()
 	}
 	return keyboard.Board(q.ID)
+}
+
+// noButtons is an empty keyboard. Sent with an edit, it removes the
+// message's buttons; leaving the keyboard out would keep them.
+func noButtons() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
 }
 
 func (h *Handler) boardText(ctx context.Context, q model.Queue) (string, error) {

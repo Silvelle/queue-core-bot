@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,11 +18,14 @@ const maxNameLen = 64
 type Service struct {
 	store storage.Storage
 	now   func() time.Time
-	// one person per sheet can edit the table
-	createMu sync.Mutex
-	locksMu  sync.Mutex
 
-	locks map[int64]*sync.Mutex
+	// createMu makes "check the name is free, then create" one step, so
+	// two /new commands with the same name can't both succeed.
+	createMu sync.Mutex
+
+	// locks holds one lock per queue, see lock.
+	locksMu sync.Mutex
+	locks   map[int64]*sync.Mutex
 }
 
 func New(store storage.Storage) *Service {
@@ -32,7 +36,8 @@ func New(store storage.Storage) *Service {
 	}
 }
 
-// lock one queue, different queues don't block each other
+// lock serializes all changes to one queue. Different queues don't block
+// each other.
 func (s *Service) lock(queueID int64) (unlock func()) {
 	s.locksMu.Lock()
 	l, ok := s.locks[queueID]
@@ -45,8 +50,9 @@ func (s *Service) lock(queueID int64) (unlock func()) {
 	return l.Unlock
 }
 
-// update loads a queue, lets fn change it and save the result.
-// if function occurs error: storage hands out copies.
+// update loads a queue, lets fn change it and saves the result. If fn
+// returns an error, nothing is saved: storage hands out copies, so a
+// half-done change never leaks.
 func (s *Service) update(
 	ctx context.Context,
 	queueID int64,
@@ -70,13 +76,16 @@ func (s *Service) update(
 	return q, nil
 }
 
-// waitingIndex returns the index in q.Entries of the user's waiting entry,
-// or -1 if the user is not waiting.
+// entryIndex returns the index in q.Entries of the user's entry, waiting or
+// done, or -1 if the user isn't in the queue.
+func entryIndex(q *model.Queue, userID int64) int {
+	return slices.IndexFunc(q.Entries, func(e model.Entry) bool { return e.UserID == userID })
+}
+
+// waitingIndex is like entryIndex, but only for a user who is still waiting.
 func waitingIndex(q *model.Queue, userID int64) int {
-	for i, e := range q.Entries {
-		if e.UserID == userID && !e.Done {
-			return i
-		}
+	if i := entryIndex(q, userID); i >= 0 && !q.Entries[i].Done {
+		return i
 	}
 	return -1
 }
@@ -128,14 +137,11 @@ func (s *Service) SetBoardMessage(ctx context.Context, queueID int64, msgID int)
 	return err
 }
 
-// Join adds user to the end of the queue and returns their position
+// Join adds the user to the end of the queue and returns their position.
 func (s *Service) Join(ctx context.Context, queueID, userID int64) (int, error) {
 	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		for _, e := range q.Entries {
-			if e.UserID != userID {
-				continue
-			}
-			if e.Done {
+		if i := entryIndex(q, userID); i >= 0 {
+			if q.Entries[i].Done {
 				return model.ErrAlreadyDone
 			}
 			return model.ErrAlreadyJoined
@@ -149,14 +155,14 @@ func (s *Service) Join(ctx context.Context, queueID, userID int64) (int, error) 
 	return q.Position(userID), nil
 }
 
-// Leave removes a waiting user from teh queue. They can join again later
+// Leave removes a waiting user from the queue. They can join again later.
 func (s *Service) Leave(ctx context.Context, queueID, userID int64) error {
 	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
 		i := waitingIndex(q, userID)
 		if i < 0 {
 			return model.ErrNotInQueue
 		}
-		q.Entries = append(q.Entries[:i], q.Entries[i+1:]...)
+		q.Entries = slices.Delete(q.Entries, i, i+1)
 		return nil
 	})
 	return err
@@ -170,8 +176,7 @@ func (s *Service) ToEnd(ctx context.Context, queueID, userID int64) (int, error)
 			return model.ErrNotInQueue
 		}
 		e := q.Entries[i]
-		q.Entries = append(q.Entries[:i], q.Entries[i+1:]...)
-		q.Entries = append(q.Entries, e)
+		q.Entries = append(slices.Delete(q.Entries, i, i+1), e)
 		return nil
 	})
 	if err != nil {
@@ -198,18 +203,16 @@ func (s *Service) Done(ctx context.Context, queueID, userID int64) error {
 // because a done entry never leaves its spot in the queue.
 func (s *Service) Undo(ctx context.Context, queueID, userID int64) (int, error) {
 	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		for i, e := range q.Entries {
-			if e.UserID != userID {
-				continue
-			}
-			if !e.Done {
-				return model.ErrNotDone
-			}
-			q.Entries[i].Done = false
-			q.Entries[i].DoneAt = time.Time{}
-			return nil
+		i := entryIndex(q, userID)
+		if i < 0 {
+			return model.ErrNotInQueue
 		}
-		return model.ErrNotInQueue
+		if !q.Entries[i].Done {
+			return model.ErrNotDone
+		}
+		q.Entries[i].Done = false
+		q.Entries[i].DoneAt = time.Time{}
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -217,14 +220,16 @@ func (s *Service) Undo(ctx context.Context, queueID, userID int64) (int, error) 
 	return q.Position(userID), nil
 }
 
+// Swapped describes a finished swap, for the public "who swapped with whom"
+// line. Positions are 1-based and taken before the swap.
 type Swapped struct {
 	TargetID int64
 	From     int
 	To       int
 }
 
-// Swaps the user with another waiting user. The inline picker uses it
-// because it knows who was picked
+// SwapWith swaps the user with another waiting user. It's meant for a swap
+// picker, which knows who was picked rather than their position.
 func (s *Service) SwapWith(ctx context.Context, queueID, userID, targetID int64) (Swapped, error) {
 	var res Swapped
 	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
@@ -235,7 +240,7 @@ func (s *Service) SwapWith(ctx context.Context, queueID, userID, targetID int64)
 	return res, err
 }
 
-// SwapWithPosition swaps the usee with whoever is at pos. The /swap command
+// SwapWithPosition swaps the user with whoever is at pos. The /swap command
 // uses it.
 func (s *Service) SwapWithPosition(ctx context.Context, queueID, userID int64, pos int) (Swapped, error) {
 	var res Swapped
@@ -299,25 +304,15 @@ func (s *Service) SaveUser(ctx context.Context, u model.User) error {
 // board. Users the bot never saw are left out.
 func (s *Service) Names(ctx context.Context, q model.Queue) (map[int64]string, error) {
 	names := make(map[int64]string, len(q.Entries))
-	add := func(id int64) error {
-		if _, ok := names[id]; ok {
-			return nil
-		}
-		u, err := s.store.User(ctx, id)
+	for _, e := range q.Entries {
+		u, err := s.store.User(ctx, e.UserID)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil
+			continue
 		}
 		if err != nil {
-			return err
-		}
-		names[id] = u.FullName()
-		return nil
-	}
-
-	for _, e := range q.Entries {
-		if err := add(e.UserID); err != nil {
 			return nil, err
 		}
+		names[e.UserID] = u.FullName()
 	}
 	return names, nil
 }

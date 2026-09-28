@@ -1,5 +1,5 @@
-// Package memory is an in-memory storage.Storage, used in tests and
-// until the SQLite implementation lands. Data is lost on restart.
+// Package memory is an in-memory storage.Storage for tests. Data is lost
+// when the program stops; the bot itself uses the sqlite package.
 package memory
 
 import (
@@ -106,10 +106,6 @@ func (s *Storage) SetIndexMessage(_ context.Context, chatID int64, msgID int) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if msgID == 0 {
-		delete(s.indexes, chatID)
-		return nil
-	}
 	s.indexes[chatID] = msgID
 	return nil
 }

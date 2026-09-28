@@ -131,7 +131,7 @@ func (h *Handler) retire(ctx context.Context, chatID int64, msgID int, movedText
 		ChatID:      chatID,
 		MessageID:   msgID,
 		Text:        movedText,
-		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}},
+		ReplyMarkup: noButtons(),
 	})
 }
 
