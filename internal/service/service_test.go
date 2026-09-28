@@ -619,3 +619,62 @@ func TestConcurrentMixedOperations(t *testing.T) {
 
 	waitingIDs(t, s, qid)
 }
+
+func TestNames(t *testing.T) {
+	ctx := context.Background()
+	s, qid := setup(t, []int64{2, 3}, []int64{5})
+
+	for _, u := range []model.User{
+		{ID: 1, FirstName: "Anna", LastName: "Kuznetsova"},
+		{ID: 2, FirstName: "Ivan"},
+		{ID: 5, Username: "olga_v"},
+	} {
+		if err := s.SaveUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q, err := s.Queue(ctx, qid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.CreatedBy = 1
+
+	got, err := s.Names(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{1: "Anna Kuznetsova", 2: "Ivan", 5: "@olga_v"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v (user 3 was never saved)", got, want)
+	}
+	for id, name := range want {
+		if got[id] != name {
+			t.Errorf("Names()[%d] = %q, want %q", id, got[id], name)
+		}
+	}
+}
+
+func TestSaveUserUpdatesName(t *testing.T) {
+	ctx := context.Background()
+	s, qid := setup(t, []int64{2}, nil)
+
+	if err := s.SaveUser(ctx, model.User{ID: 2, FirstName: "Ivan"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveUser(ctx, model.User{ID: 2, FirstName: "Ivan", LastName: "Tarasov"}); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := s.Queue(ctx, qid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Names(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[2] != "Ivan Tarasov" {
+		t.Errorf("name after rename = %q, want %q", got[2], "Ivan Tarasov")
+	}
+}
