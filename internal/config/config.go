@@ -17,4 +17,3 @@ func Load() (*Config, error) {
 
 	return &Config{token}, nil
 }
-
