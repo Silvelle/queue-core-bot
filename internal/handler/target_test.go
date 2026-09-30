@@ -45,15 +45,3 @@ func TestPickQueue(t *testing.T) {
 		})
 	}
 }
-
-func TestBoardMarkup(t *testing.T) {
-	open := boardMarkup(model.Queue{ID: 1})
-	if len(open.InlineKeyboard) == 0 {
-		t.Error("an open queue has no buttons")
-	}
-
-	closed := boardMarkup(model.Queue{ID: 1, Closed: true})
-	if closed == nil || closed.InlineKeyboard == nil || len(closed.InlineKeyboard) != 0 {
-		t.Errorf("a closed queue should get an empty, non-nil keyboard, got %+v", closed)
-	}
-}

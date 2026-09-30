@@ -15,18 +15,16 @@ import (
 var _ storage.Storage = (*Storage)(nil)
 
 type Storage struct {
-	mu      sync.RWMutex
-	users   map[int64]model.User
-	queues  map[int64]model.Queue
-	indexes map[int64]int
-	nextID  int64
+	mu     sync.RWMutex
+	users  map[int64]model.User
+	queues map[int64]model.Queue
+	nextID int64
 }
 
 func New() *Storage {
 	return &Storage{
-		users:   make(map[int64]model.User),
-		queues:  make(map[int64]model.Queue),
-		indexes: make(map[int64]int),
+		users:  make(map[int64]model.User),
+		queues: make(map[int64]model.Queue),
 	}
 }
 
@@ -93,21 +91,6 @@ func (s *Storage) OpenQueues(_ context.Context, chatID int64) ([]model.Queue, er
 	}
 	slices.SortFunc(out, func(a, b model.Queue) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
-}
-
-func (s *Storage) IndexMessage(_ context.Context, chatID int64) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.indexes[chatID], nil
-}
-
-func (s *Storage) SetIndexMessage(_ context.Context, chatID int64, msgID int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.indexes[chatID] = msgID
-	return nil
 }
 
 // clone copies the entries slice so callers can't mutate stored data

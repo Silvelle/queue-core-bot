@@ -284,16 +284,6 @@ func (s *Service) Close(ctx context.Context, queueID int64) error {
 	return err
 }
 
-// IndexMessage returns the chat's message listing its queues, or 0.
-func (s *Service) IndexMessage(ctx context.Context, chatID int64) (int, error) {
-	return s.store.IndexMessage(ctx, chatID)
-}
-
-// SetIndexMessage remembers the chat's list message; 0 forgets it.
-func (s *Service) SetIndexMessage(ctx context.Context, chatID int64, msgID int) error {
-	return s.store.SetIndexMessage(ctx, chatID, msgID)
-}
-
 // SaveUser stores the user's current names. Handlers call it on every
 // update, so renamed users show up with their new name.
 func (s *Service) SaveUser(ctx context.Context, u model.User) error {
