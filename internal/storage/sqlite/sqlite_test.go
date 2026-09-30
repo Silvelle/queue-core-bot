@@ -209,7 +209,11 @@ func TestUpgradeFromVersion1(t *testing.T) {
 	if len(queues) != 1 || queues[0].Name != "Practice 4" {
 		t.Errorf("after upgrade: open queues = %+v, want Practice 4", queues)
 	}
-	if err := s.SetIndexMessage(ctx, 10, 5); err != nil {
-		t.Errorf("after upgrade, the new chats table doesn't work: %v", err)
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Errorf("after upgrade: schema version = %d, want %d", version, len(migrations))
 	}
 }

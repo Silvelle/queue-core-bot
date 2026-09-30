@@ -45,7 +45,9 @@ var migrations = []string{
 	);
 	`,
 
-	// 2: the message in each chat that lists its open queues.
+	// 2: the message in each chat that lists its open queues. The bot no
+	// longer tracks it, so the table is unused, but a shipped migration
+	// is never changed or removed.
 	`
 	CREATE TABLE chats (
 		id           INTEGER PRIMARY KEY,

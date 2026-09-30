@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"log"
 	"strings"
 
 	"github.com/go-telegram/bot"
@@ -13,67 +12,21 @@ import (
 	"github.com/Silvelle/queue-core-bot/internal/render"
 )
 
-// refreshIndex brings the chat's list of queues up to date. It edits the
-// list in place if there is one. With repost, or if there is no list yet or
-// it was deleted, it posts a new list at the bottom of the chat.
-func (h *Handler) refreshIndex(ctx context.Context, chatID int64, repost bool) error {
+// postIndex posts the chat's list of queues. It's only posted when someone
+// asks for it, with /queues or "Все очереди", and it's never pinned. Earlier
+// lists stay as they are, buttons included.
+func (h *Handler) postIndex(ctx context.Context, chatID int64) error {
 	open, err := h.svc.OpenQueues(ctx, chatID)
 	if err != nil {
 		return err
 	}
-	text, markup := render.Index(open), keyboard.Index(open)
-
-	oldID, err := h.svc.IndexMessage(ctx, chatID)
-	if err != nil {
-		return err
-	}
-	if oldID != 0 && !repost {
-		_, err := h.b.EditMessageText(ctx, &bot.EditMessageTextParams{
-			ChatID:      chatID,
-			MessageID:   oldID,
-			Text:        text,
-			ParseMode:   models.ParseModeHTML,
-			ReplyMarkup: markup,
-		})
-		if err == nil || isNotModified(err) {
-			return nil
-		}
-		log.Printf("edit list of queues in chat %d, posting a new one: %v", chatID, err)
-	}
-
-	sent, err := h.send(ctx, chatID, text, markup)
-	if err != nil {
-		return err
-	}
-	if err := h.svc.SetIndexMessage(ctx, chatID, sent.ID); err != nil {
-		return err
-	}
-	if oldID != 0 {
-		h.retire(ctx, chatID, oldID)
-	}
-
-	// Pinning only works when the bot is an admin. Without that right the
-	// list is still there, so the failure isn't worth bothering anyone.
-	_, _ = h.b.PinChatMessage(ctx, &bot.PinChatMessageParams{
-		ChatID:              chatID,
-		MessageID:           sent.ID,
-		DisableNotification: true,
-	})
-	return nil
+	_, err = h.send(ctx, chatID, render.Index(open), keyboard.Index(open))
+	return err
 }
 
-// refreshIndexQuietly updates the list after a queue is opened or closed.
-// Failures are only logged: the queue itself already worked.
-func (h *Handler) refreshIndexQuietly(ctx context.Context, chatID int64) {
-	if err := h.refreshIndex(ctx, chatID, false); err != nil {
-		log.Printf("update list of queues in chat %d: %v", chatID, err)
-	}
-}
-
-// queues handles /queues: it posts the list of queues again at the bottom
-// of the chat.
+// queues handles /queues: it posts the list of queues.
 func (h *Handler) queues(ctx context.Context, msg *models.Message, _ string) {
-	if err := h.refreshIndex(ctx, msg.Chat.ID, true); err != nil {
+	if err := h.postIndex(ctx, msg.Chat.ID); err != nil {
 		h.replyError(ctx, msg, "post list of queues", err)
 	}
 }
@@ -90,9 +43,9 @@ func (h *Handler) show(ctx context.Context, msg *models.Message, name string) {
 	}
 }
 
-// repostBoard posts the queue's board again at the bottom of the chat and
-// retires the old one, so there is always exactly one board with working
-// buttons.
+// repostBoard posts the queue's board again at the bottom of the chat. The
+// earlier boards stay as they are, buttons included; the newest one is the
+// one the bot keeps up to date.
 func (h *Handler) repostBoard(ctx context.Context, queueID int64) error {
 	// Two people asking for the same board at once must not end up with
 	// two new boards, so reposts run one at a time. They're rare.
@@ -111,28 +64,11 @@ func (h *Handler) repostBoard(ctx context.Context, queueID int64) error {
 		return err
 	}
 
-	sent, err := h.send(ctx, q.ChatID, text, boardMarkup(q))
+	sent, err := h.send(ctx, q.ChatID, text, keyboard.Board(q.ID))
 	if err != nil {
 		return err
 	}
-	if err := h.svc.SetBoardMessage(ctx, q.ID, sent.ID); err != nil {
-		return err
-	}
-	if q.BoardMsgID != 0 {
-		h.retire(ctx, q.ChatID, q.BoardMsgID)
-	}
-	return nil
-}
-
-// retire takes the buttons off an old copy of a message the bot has
-// replaced, so nobody presses stale buttons. Its text stays as it was, and
-// the message isn't deleted, so nothing in the chat changes or disappears.
-func (h *Handler) retire(ctx context.Context, chatID int64, msgID int) {
-	_, _ = h.b.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
-		ChatID:      chatID,
-		MessageID:   msgID,
-		ReplyMarkup: noButtons(),
-	})
+	return h.svc.SetBoardMessage(ctx, q.ID, sent.ID)
 }
 
 // send posts a board or a list of queues: HTML text with buttons, see

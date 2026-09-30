@@ -122,7 +122,6 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 	if err := h.svc.SetBoardMessage(ctx, q.ID, board.ID); err != nil {
 		log.Printf("remember board of queue %d: %v", q.ID, err)
 	}
-	h.refreshIndexQuietly(ctx, q.ChatID)
 }
 
 // swap handles /swap <position>. It swaps the sender with whoever is at
@@ -154,7 +153,8 @@ func (h *Handler) swap(ctx context.Context, msg *models.Message, args string) {
 }
 
 // closeQueue handles /close <name>, or /close sent as a reply to a board.
-// The board stays in the chat without its buttons.
+// The board stays in the chat, marked closed; its buttons stay too and
+// answer that the queue is closed.
 func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name string) {
 	q, ok := h.commandQueue(ctx, msg, name, false, closeUsageText)
 	if !ok {
@@ -169,7 +169,6 @@ func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name stri
 		log.Printf("redraw closed board of queue %d: %v", q.ID, err)
 	}
 	h.reply(ctx, msg, closedText(q.Name, len(q.Waiting())))
-	h.refreshIndexQuietly(ctx, q.ChatID)
 }
 
 // commandQueue finds the queue a command is about, see pickQueue. If there
@@ -213,7 +212,7 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 		return
 	}
 
-	if !pressedOn(cq, q.ChatID, q.BoardMsgID) {
+	if !pressedOn(cq, q.ChatID) {
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
@@ -230,8 +229,7 @@ func (h *Handler) boardPress(ctx context.Context, _ *bot.Bot, update *models.Upd
 func (h *Handler) showPress(ctx context.Context, cq *models.CallbackQuery, q model.Queue) {
 	// As with board buttons, only a button that really sits under this
 	// chat's list counts.
-	indexID, err := h.svc.IndexMessage(ctx, q.ChatID)
-	if err != nil || !pressedOn(cq, q.ChatID, indexID) {
+	if !pressedOn(cq, q.ChatID) {
 		h.toast(ctx, cq, badButtonText)
 		return
 	}
@@ -278,7 +276,7 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 		return answer{text: whereText(q.Position(userID), len(q.Waiting()))}
 	case callbacks.All:
 		// Same as /queues: the list of queues at the bottom of the chat.
-		if err := h.refreshIndex(ctx, q.ChatID, true); err != nil {
+		if err := h.postIndex(ctx, q.ChatID); err != nil {
 			return answer{text: h.userError(err, "post list of queues in chat %d", q.ChatID)}
 		}
 		return answer{}
@@ -290,12 +288,13 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	return answer{text: text, redraw: true}
 }
 
-// pressedOn reports whether the pressed button sits under the given message.
-// Button data can be forged, so every press is checked against the message
-// the button really belongs to.
-func pressedOn(cq *models.CallbackQuery, chatID int64, msgID int) bool {
+// pressedOn reports whether the pressed button sits in the queue's own
+// chat. Button data can be forged, so a button for this queue pressed in
+// any other chat is refused. Any copy of a board or list in its own chat
+// works, old ones included.
+func pressedOn(cq *models.CallbackQuery, chatID int64) bool {
 	msg := cq.Message.Message
-	return msg != nil && msg.Chat.ID == chatID && msg.ID == msgID
+	return msg != nil && msg.Chat.ID == chatID
 }
 
 // drawBoard edits the board message to show the queue's current state.
@@ -314,7 +313,7 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 		MessageID:   q.BoardMsgID,
 		Text:        text,
 		ParseMode:   models.ParseModeHTML,
-		ReplyMarkup: boardMarkup(q),
+		ReplyMarkup: keyboard.Board(q.ID),
 	})
 	// Telegram refuses an edit that changes nothing, for example when
 	// someone joined and left before the redraw. That's not a problem.
@@ -322,20 +321,6 @@ func (h *Handler) drawBoard(ctx context.Context, queueID int64) error {
 		return nil
 	}
 	return err
-}
-
-// boardMarkup returns the buttons under a board. A closed queue has none.
-func boardMarkup(q model.Queue) *models.InlineKeyboardMarkup {
-	if q.Closed {
-		return noButtons()
-	}
-	return keyboard.Board(q.ID)
-}
-
-// noButtons is an empty keyboard. Sent with an edit, it removes the
-// message's buttons; leaving the keyboard out would keep them.
-func noButtons() *models.InlineKeyboardMarkup {
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
 }
 
 func (h *Handler) boardText(ctx context.Context, q model.Queue) (string, error) {

@@ -190,29 +190,6 @@ func (s *Storage) OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, 
 	return out, nil
 }
 
-func (s *Storage) IndexMessage(ctx context.Context, chatID int64) (int, error) {
-	var msgID int
-	err := s.db.QueryRowContext(ctx, `SELECT index_msg_id FROM chats WHERE id = ?`, chatID).Scan(&msgID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("load index message of chat %d: %w", chatID, err)
-	}
-	return msgID, nil
-}
-
-func (s *Storage) SetIndexMessage(ctx context.Context, chatID int64, msgID int) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO chats (id, index_msg_id) VALUES (?, ?)
-		ON CONFLICT (id) DO UPDATE SET index_msg_id = excluded.index_msg_id`,
-		chatID, msgID)
-	if err != nil {
-		return fmt.Errorf("save index message of chat %d: %w", chatID, err)
-	}
-	return nil
-}
-
 // entries loads a queue's entries in their order.
 func (s *Storage) entries(ctx context.Context, queueID int64) ([]model.Entry, error) {
 	rows, err := s.db.QueryContext(ctx, `
