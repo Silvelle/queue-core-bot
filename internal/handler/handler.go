@@ -168,7 +168,7 @@ func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name stri
 	if err := h.drawBoard(ctx, q.ID); err != nil {
 		log.Printf("redraw closed board of queue %d: %v", q.ID, err)
 	}
-	h.reply(ctx, msg, closedText(q.Name, len(q.Waiting())))
+	h.reply(ctx, msg, closedText(q.Name))
 }
 
 // commandQueue finds the queue a command is about, see pickQueue. If there
