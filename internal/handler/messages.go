@@ -90,11 +90,8 @@ func swappedText(queue, user, target string, from, to int) string {
 	return fmt.Sprintf("%s: %s №%d ⇄ %s №%d", queue, user, from, target, to)
 }
 
-func closedText(queue string, waiting int) string {
-	if waiting == 0 {
-		return fmt.Sprintf("Очередь «%s» закрыта. Все сдали.", queue)
-	}
-	return fmt.Sprintf("Очередь «%s» закрыта. Не успели: %d.", queue, waiting)
+func closedText(queue string) string {
+	return fmt.Sprintf("Очередь «%s» закрыта.", queue)
 }
 
 // pickErrorText explains why pickQueue couldn't find the queue a command

@@ -76,17 +76,9 @@ func TestSwappedText(t *testing.T) {
 }
 
 func TestClosedText(t *testing.T) {
-	tests := []struct {
-		waiting int
-		want    string
-	}{
-		{0, "Очередь «Практика 4» закрыта. Все сдали."},
-		{3, "Очередь «Практика 4» закрыта. Не успели: 3."},
-	}
-	for _, tt := range tests {
-		if got := closedText("Практика 4", tt.waiting); got != tt.want {
-			t.Errorf("closedText(%d) = %q, want %q", tt.waiting, got, tt.want)
-		}
+	want := "Очередь «Практика 4» закрыта."
+	if got := closedText("Практика 4"); got != want {
+		t.Errorf("closedText() = %q, want %q", got, want)
 	}
 }
 
