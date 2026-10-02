@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/Silvelle/queue-core-bot/internal/callbacks"
@@ -38,6 +39,7 @@ func (h *Handler) Register(ctx context.Context) {
 	h.command("help", h.help)
 	h.groupCommand("new", h.newQueue)
 	h.groupCommand("swap", h.swap)
+	h.groupCommand("place", h.place)
 	h.groupCommand("close", h.closeQueue)
 	h.groupCommand("queues", h.queues)
 	h.groupCommand("show", h.show)
@@ -47,6 +49,7 @@ func (h *Handler) Register(ctx context.Context) {
 		Commands: []models.BotCommand{
 			{Command: "new", Description: "Создать очередь"},
 			{Command: "swap", Description: "Поменяться местами"},
+			{Command: "place", Description: "Поставить человека на место"},
 			{Command: "close", Description: "Закрыть очередь"},
 			{Command: "queues", Description: "Список открытых очередей"},
 			{Command: "show", Description: "Показать доску очереди внизу чата"},
@@ -150,6 +153,57 @@ func (h *Handler) swap(ctx context.Context, msg *models.Message, args string) {
 		log.Printf("names for swap line in queue %d: %v", q.ID, err)
 	}
 	h.reply(ctx, msg, swappedText(q.Name, render.Name(names, msg.From.ID), render.Name(names, res.TargetID), res.From, res.To))
+}
+
+// place handles /place <who> <position>, for fixing a wrong press: it moves
+// a waiting person to that position, or puts back someone who left by
+// mistake. who is the person's current number, or their user ID. Placing
+// someone else is allowed, like /swap, so it's always announced in the chat.
+func (h *Handler) place(ctx context.Context, msg *models.Message, args string) {
+	who, to, ok := parsePlaceArgs(args)
+	if !ok {
+		h.reply(ctx, msg, placeUsageText)
+		return
+	}
+
+	q, ok := h.commandQueue(ctx, msg, "", true, "")
+	if !ok {
+		return
+	}
+
+	res, err := h.svc.Place(ctx, q.ID, who, to)
+	if err != nil {
+		h.replyError(ctx, msg, "place", err)
+		return
+	}
+	h.redraw.Schedule(q.ID)
+
+	// The names are looked up after placing, so an inserted person is in
+	// the queue and has a name.
+	if placed, err := h.svc.Queue(ctx, q.ID); err == nil {
+		q = placed
+	} else {
+		log.Printf("reload queue %d after place: %v", q.ID, err)
+	}
+	names, err := h.svc.Names(ctx, q)
+	if err != nil {
+		log.Printf("names for place line in queue %d: %v", q.ID, err)
+	}
+	h.reply(ctx, msg, placedText(q.Name, render.Name(names, res.UserID), res))
+}
+
+// parsePlaceArgs reads "<who> <position>" for /place.
+func parsePlaceArgs(args string) (who int64, to int, ok bool) {
+	fields := strings.Fields(args)
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	who, err1 := strconv.ParseInt(fields[0], 10, 64)
+	to, err2 := strconv.Atoi(fields[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return who, to, true
 }
 
 // closeQueue handles /close <name>, or /close sent as a reply to a board.

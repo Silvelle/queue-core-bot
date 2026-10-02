@@ -256,6 +256,91 @@ func (s *Service) SwapWithPosition(ctx context.Context, queueID, userID int64, p
 	return res, err
 }
 
+// Placed describes a finished /place, for the public line. To is the new
+// position; From is the old one, or 0 if the person was inserted.
+type Placed struct {
+	UserID int64
+	From   int
+	To     int
+}
+
+// Inserted reports whether the person wasn't in the queue before.
+func (p Placed) Inserted() bool { return p.From == 0 }
+
+// Place puts a person at position to, for fixing a wrong press. Everyone
+// from that position on moves down by one, so unlike a swap nobody is sent
+// backwards.
+//
+// who is the person's current position if it's within the queue, and
+// their user ID otherwise: positions are small numbers, Telegram user IDs
+// never are. A waiting person is moved. Someone not in the queue, like
+// after "Выйти" by mistake, is inserted, which also allows the place right
+// after the last one; they must be someone the bot has seen, so a mistyped
+// ID can't add a stranger. Someone done is refused: only they can undo it.
+// Everything is resolved under the queue lock, so nothing can go stale
+// between reading the board and placing.
+func (s *Service) Place(ctx context.Context, queueID, who int64, to int) (Placed, error) {
+	var res Placed
+	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		waiting := q.Waiting()
+		userID := who
+		if who >= 1 && who <= int64(len(waiting)) {
+			userID = waiting[who-1].UserID
+		}
+
+		var (
+			e    model.Entry
+			from int // stays 0 for an insert
+		)
+		switch i := entryIndex(q, userID); {
+		case i >= 0 && q.Entries[i].Done:
+			return model.ErrTargetDone
+		case i >= 0:
+			if to < 1 || to > len(waiting) {
+				return model.ErrInvalidPosition
+			}
+			from = q.Position(userID)
+			if from == to {
+				return model.ErrAlreadyThere
+			}
+			e = q.Entries[i]
+			q.Entries = slices.Delete(q.Entries, i, i+1)
+		default:
+			if to < 1 || to > len(waiting)+1 {
+				return model.ErrInvalidPosition
+			}
+			if _, err := s.store.User(ctx, userID); errors.Is(err, model.ErrNotFound) {
+				return model.ErrUnknownUser
+			} else if err != nil {
+				return err
+			}
+			e = model.Entry{UserID: userID, JoinedAt: s.now()}
+		}
+
+		q.Entries = slices.Insert(q.Entries, waitingSlot(q, to), e)
+		res = Placed{UserID: userID, From: from, To: to}
+		return nil
+	})
+	return res, err
+}
+
+// waitingSlot returns the index in q.Entries where an entry must go to
+// become waiting position pos: right before whoever is at pos now, or at
+// the end. Done entries keep their places.
+func waitingSlot(q *model.Queue, pos int) int {
+	n := 0
+	for i, e := range q.Entries {
+		if e.Done {
+			continue
+		}
+		n++
+		if n == pos {
+			return i
+		}
+	}
+	return len(q.Entries)
+}
+
 func swap(q *model.Queue, userID int64, targetID int64) (Swapped, error) {
 	if userID == targetID {
 		return Swapped{}, model.ErrSelfSwap
