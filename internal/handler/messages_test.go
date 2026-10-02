@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
+	"github.com/Silvelle/queue-core-bot/internal/service"
 )
 
 // Every error the service can return must have its own message, so no one
@@ -24,6 +25,8 @@ func TestEveryModelErrorHasText(t *testing.T) {
 		model.ErrTargetNotInQueue,
 		model.ErrNotDone,
 		model.ErrAlreadyThere,
+		model.ErrTargetDone,
+		model.ErrUnknownUser,
 	}
 	seen := make(map[string]error)
 	for _, err := range all {
@@ -105,14 +108,18 @@ func TestPickErrorText(t *testing.T) {
 	}
 }
 
-func TestMovedText(t *testing.T) {
-	got := movedText("Практика 4", "Иван Тарасов", 7, 3)
-	if want := "Практика 4: Иван Тарасов №7 → №3"; got != want {
-		t.Errorf("movedText() = %q, want %q", got, want)
+func TestPlacedText(t *testing.T) {
+	moved := placedText("Практика 4", "Иван Тарасов", service.Placed{UserID: 1, From: 7, To: 3})
+	if want := "Практика 4: Иван Тарасов №7 → №3"; moved != want {
+		t.Errorf("moved: %q, want %q", moved, want)
+	}
+	inserted := placedText("Практика 4", "Иван Тарасов", service.Placed{UserID: 1, To: 3})
+	if want := "Практика 4: Иван Тарасов встаёт на №3"; inserted != want {
+		t.Errorf("inserted: %q, want %q", inserted, want)
 	}
 }
 
-func TestParseMoveArgs(t *testing.T) {
+func TestParsePlaceArgs(t *testing.T) {
 	tests := []struct {
 		args   string
 		who    int64
@@ -129,9 +136,9 @@ func TestParseMoveArgs(t *testing.T) {
 		{"7 b", 0, 0, false},
 	}
 	for _, tt := range tests {
-		who, to, ok := parseMoveArgs(tt.args)
+		who, to, ok := parsePlaceArgs(tt.args)
 		if who != tt.who || to != tt.to || ok != tt.wantOK {
-			t.Errorf("parseMoveArgs(%q) = %d, %d, %v, want %d, %d, %v", tt.args, who, to, ok, tt.who, tt.to, tt.wantOK)
+			t.Errorf("parsePlaceArgs(%q) = %d, %d, %v, want %d, %d, %v", tt.args, who, to, ok, tt.who, tt.to, tt.wantOK)
 		}
 	}
 }

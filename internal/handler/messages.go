@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
+	"github.com/Silvelle/queue-core-bot/internal/service"
 )
 
 const (
@@ -12,7 +13,7 @@ const (
 
 /new <название> — создать очередь, например /new Практика 4
 /swap <номер> — поменяться местами с тем, кто стоит на этом месте
-/move <номер> <место> — переставить человека на другое место, например если он по ошибке нажал «В конец»: /move 7 3
+/place <номер или ID> <место> — добавить человека в очередь по ID или по номеру в очереди на определённое место
 /close <название> — закрыть очередь
 /queues — список открытых очередей
 /show <название> — показать доску очереди внизу чата
@@ -28,7 +29,7 @@ const (
 	genericErrText  = "Что-то пошло не так. Попробуйте ещё раз."
 
 	swapUsageText   = "Укажите номер места, например /swap 5"
-	moveUsageText   = "Укажите, кого и на какое место переставить: /move 7 3 — человека с №7 на №3. Вместо номера можно указать его ID."
+	placeUsageText  = "Укажите, кого и на какое место поставить: /place 7 3 — человека с №7 на №3. Вместо номера можно указать ID, например чтобы вернуть того, кто нажал «Выйти»."
 	closeUsageText  = "Укажите очередь, например /close Практика 4, или отправьте /close ответом на её доску."
 	noQueuesText    = "Здесь нет открытых очередей. Создайте: /new <название>"
 	whichQueueText  = "Открыто несколько очередей. Отправьте команду ответом на доску нужной."
@@ -53,6 +54,8 @@ var errorTexts = map[error]string{
 	model.ErrTargetNotInQueue: "Этого человека нет среди ожидающих.",
 	model.ErrNotDone:          "Вы ещё не отмечали «Сдано».",
 	model.ErrAlreadyThere:     "Этот человек уже стоит на этом месте.",
+	model.ErrTargetDone:       "Этот человек уже сдал. Вернуть его может только он сам — кнопкой «↩ Сброс».",
+	model.ErrUnknownUser:      "На этом месте никого нет, и человека с таким ID я не знаю. Он должен хотя бы раз нажать кнопку бота.",
 }
 
 // errorText turns a service error into a short message. known is false for
@@ -93,10 +96,13 @@ func swappedText(queue, user, target string, from, to int) string {
 	return fmt.Sprintf("%s: %s №%d ⇄ %s №%d", queue, user, from, target, to)
 }
 
-// movedText is the public line posted after /move: it moves other people
+// placedText is the public line posted after /place: it moves other people
 // down, so everyone should see it.
-func movedText(queue, user string, from, to int) string {
-	return fmt.Sprintf("%s: %s №%d → №%d", queue, user, from, to)
+func placedText(queue, user string, p service.Placed) string {
+	if p.Inserted() {
+		return fmt.Sprintf("%s: %s встаёт на №%d", queue, user, p.To)
+	}
+	return fmt.Sprintf("%s: %s №%d → №%d", queue, user, p.From, p.To)
 }
 
 func closedText(queue string) string {
