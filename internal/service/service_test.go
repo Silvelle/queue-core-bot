@@ -533,6 +533,7 @@ func TestClosedQueueRejectsChanges(t *testing.T) {
 		"done":             func() error { return s.Done(ctx, q.ID, 1) },
 		"close":            func() error { return s.Close(ctx, q.ID) },
 		"undo":             func() error { _, err := s.Undo(ctx, q.ID, 1); return err },
+		"move":             func() error { _, err := s.Move(ctx, q.ID, 1, 2); return err },
 	}
 	for name, op := range ops {
 		if err := op(); !errors.Is(err, model.ErrQueueClosed) {
@@ -742,5 +743,77 @@ func TestDoneThenUndoRestoresPlace(t *testing.T) {
 		if e.UserID == 2 && !e.DoneAt.IsZero() {
 			t.Error("DoneAt should be cleared by Undo")
 		}
+	}
+}
+
+func TestMove(t *testing.T) {
+	tests := []struct {
+		name    string
+		who     int64
+		to      int
+		want    []int64
+		wantRes Moved
+		wantErr error
+	}{
+		// Waiting: 1 2 3 4 5 (and 9 done, first in the slice).
+		{"last back to third, by position", 5, 3, []int64{1, 2, 5, 3, 4}, Moved{UserID: 5, From: 5, To: 3}, nil},
+		{"to the front", 4, 1, []int64{4, 1, 2, 3, 5}, Moved{UserID: 4, From: 4, To: 1}, nil},
+		{"forward to the end", 1, 5, []int64{2, 3, 4, 5, 1}, Moved{UserID: 1, From: 1, To: 5}, nil},
+		{"one step back", 2, 3, []int64{1, 3, 2, 4, 5}, Moved{UserID: 2, From: 2, To: 3}, nil},
+		{"by user ID", 1005, 2, []int64{1, 1005, 2, 3, 4}, Moved{UserID: 1005, From: 5, To: 2}, nil},
+		{"already there", 3, 3, nil, Moved{}, model.ErrAlreadyThere},
+		{"target position 0", 2, 0, nil, Moved{}, model.ErrInvalidPosition},
+		{"target past the end", 2, 6, nil, Moved{}, model.ErrInvalidPosition},
+		{"unknown user ID", 777, 2, nil, Moved{}, model.ErrTargetNotInQueue},
+		{"done user's ID", 9, 2, nil, Moved{}, model.ErrTargetNotInQueue},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waiting := []int64{1, 2, 3, 4, 5}
+			if tt.name == "by user ID" {
+				waiting = []int64{1, 2, 3, 4, 1005}
+			}
+			s, qid := setup(t, waiting, []int64{9})
+
+			res, err := s.Move(context.Background(), qid, tt.who, tt.to)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if res != tt.wantRes {
+				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
+			}
+			want := tt.want
+			if tt.wantErr != nil {
+				want = waiting // a refused move changes nothing
+			}
+			if got := waitingIDs(t, s, qid); !slices.Equal(got, want) {
+				t.Errorf("waiting = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// Done entries in the middle of the slice stay where they are, and
+// positions still count only people waiting.
+func TestMoveKeepsDoneInPlace(t *testing.T) {
+	ctx := context.Background()
+	s, qid := setup(t, []int64{1, 2, 3}, nil)
+	if err := s.Done(ctx, qid, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Waiting is now 1 3; move 3 to the front.
+	if _, err := s.Move(ctx, qid, 2, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{3, 1}) {
+		t.Errorf("waiting = %v, want [3 1]", got)
+	}
+	q, err := s.Queue(ctx, qid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !q.Has(2) || q.Position(2) != 0 {
+		t.Error("the done user should still be in the queue, not waiting")
 	}
 }

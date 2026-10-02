@@ -256,6 +256,69 @@ func (s *Service) SwapWithPosition(ctx context.Context, queueID, userID int64, p
 	return res, err
 }
 
+// Moved describes a finished move, for the public line. Positions are
+// 1-based: From is before the move, To after it.
+type Moved struct {
+	UserID int64
+	From   int
+	To     int
+}
+
+// Move puts a waiting person at position to. Everyone from that position on
+// moves down by one, so unlike a swap nobody is sent backwards. It's for
+// fixing a wrong press, like "В конец" by mistake.
+//
+// who is the person's current position if it's within the queue, and
+// their user ID otherwise: positions are small numbers, Telegram user IDs
+// never are. Both are resolved under the queue lock, so they can't go
+// stale between reading the board and moving.
+func (s *Service) Move(ctx context.Context, queueID, who int64, to int) (Moved, error) {
+	var res Moved
+	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		waiting := q.Waiting()
+		if to < 1 || to > len(waiting) {
+			return model.ErrInvalidPosition
+		}
+		userID := who
+		if who >= 1 && who <= int64(len(waiting)) {
+			userID = waiting[who-1].UserID
+		}
+
+		i := waitingIndex(q, userID)
+		if i < 0 {
+			return model.ErrTargetNotInQueue
+		}
+		from := q.Position(userID)
+		if from == to {
+			return model.ErrAlreadyThere
+		}
+
+		e := q.Entries[i]
+		q.Entries = slices.Delete(q.Entries, i, i+1)
+		q.Entries = slices.Insert(q.Entries, waitingSlot(q, to), e)
+		res = Moved{UserID: userID, From: from, To: to}
+		return nil
+	})
+	return res, err
+}
+
+// waitingSlot returns the index in q.Entries where an entry must go to
+// become waiting position pos: right before whoever is at pos now, or at
+// the end. Done entries keep their places.
+func waitingSlot(q *model.Queue, pos int) int {
+	n := 0
+	for i, e := range q.Entries {
+		if e.Done {
+			continue
+		}
+		n++
+		if n == pos {
+			return i
+		}
+	}
+	return len(q.Entries)
+}
+
 func swap(q *model.Queue, userID int64, targetID int64) (Swapped, error) {
 	if userID == targetID {
 		return Swapped{}, model.ErrSelfSwap

@@ -15,4 +15,5 @@ var (
 	ErrSelfSwap         = errors.New("cannot swap with yourself")
 	ErrTargetNotInQueue = errors.New("the other user is not waiting in the queue")
 	ErrNotDone          = errors.New("user has not defended in this queue")
+	ErrAlreadyThere     = errors.New("user is already at this position")
 )

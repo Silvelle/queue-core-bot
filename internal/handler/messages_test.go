@@ -23,6 +23,7 @@ func TestEveryModelErrorHasText(t *testing.T) {
 		model.ErrSelfSwap,
 		model.ErrTargetNotInQueue,
 		model.ErrNotDone,
+		model.ErrAlreadyThere,
 	}
 	seen := make(map[string]error)
 	for _, err := range all {
@@ -101,5 +102,36 @@ func TestPickErrorText(t *testing.T) {
 				t.Errorf("pickErrorText() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMovedText(t *testing.T) {
+	got := movedText("Практика 4", "Иван Тарасов", 7, 3)
+	if want := "Практика 4: Иван Тарасов №7 → №3"; got != want {
+		t.Errorf("movedText() = %q, want %q", got, want)
+	}
+}
+
+func TestParseMoveArgs(t *testing.T) {
+	tests := []struct {
+		args   string
+		who    int64
+		to     int
+		wantOK bool
+	}{
+		{"7 3", 7, 3, true},
+		{"  7   3 ", 7, 3, true},
+		{"123456789 2", 123456789, 2, true},
+		{"7", 0, 0, false},
+		{"", 0, 0, false},
+		{"7 3 1", 0, 0, false},
+		{"a 3", 0, 0, false},
+		{"7 b", 0, 0, false},
+	}
+	for _, tt := range tests {
+		who, to, ok := parseMoveArgs(tt.args)
+		if who != tt.who || to != tt.to || ok != tt.wantOK {
+			t.Errorf("parseMoveArgs(%q) = %d, %d, %v, want %d, %d, %v", tt.args, who, to, ok, tt.who, tt.to, tt.wantOK)
+		}
 	}
 }
