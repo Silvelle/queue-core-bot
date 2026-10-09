@@ -14,14 +14,14 @@ var ErrInvalid = errors.New("invalid callback")
 
 type Action string
 
+// The letters "x" and "u" belonged to the removed "Сдано" and "Сброс"
+// buttons. They stay unused, so those buttons on old boards decode as
+// invalid instead of doing something else.
 const (
 	Join  Action = "j"
 	Leave Action = "l"
 	ToEnd Action = "e"
-	Done  Action = "x"
 	Where Action = "w"
-	// Undo takes back a Done.
-	Undo Action = "u"
 	// All posts the chat's list of queues, like /queues.
 	All Action = "a"
 	// Show posts the queue's board again at the bottom of the chat. It's
@@ -31,7 +31,7 @@ const (
 
 func (a Action) valid() bool {
 	switch a {
-	case Join, Leave, ToEnd, Done, Where, Undo, All, Show:
+	case Join, Leave, ToEnd, Where, All, Show:
 		return true
 	}
 	return false

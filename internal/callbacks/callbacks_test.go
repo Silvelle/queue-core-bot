@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-var allActions = []Action{Join, Leave, ToEnd, Done, Where, Undo, All, Show}
+var allActions = []Action{Join, Leave, ToEnd, Where, All, Show}
 
 // Whatever Encode writes, Decode must read back exactly.
 func TestRoundTrip(t *testing.T) {
@@ -33,9 +33,7 @@ func TestEncodeFormat(t *testing.T) {
 		{42, Join, "b:42:j"},
 		{42, Leave, "b:42:l"},
 		{42, ToEnd, "b:42:e"},
-		{42, Done, "b:42:x"},
 		{42, Where, "b:42:w"},
-		{42, Undo, "b:42:u"},
 		{42, All, "b:42:a"},
 		{42, Show, "b:42:s"},
 		{7, Join, "b:7:j"},
@@ -92,6 +90,9 @@ func TestDecodeInvalid(t *testing.T) {
 		{"extra part", "b:42:j:extra"},
 		{"wrong prefix", "x:42:j"},
 		{"uppercase prefix", "B:42:j"},
+		// The removed "Сдано" and "Сброс" buttons, still on old boards.
+		{"old Сдано button", "b:42:x"},
+		{"old Сброс button", "b:42:u"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

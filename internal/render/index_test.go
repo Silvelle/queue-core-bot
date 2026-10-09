@@ -8,7 +8,7 @@ import (
 
 var (
 	practice = model.Queue{Name: "Practice 4", Entries: []model.Entry{
-		{UserID: 1, Done: true}, {UserID: 2}, {UserID: 3}, {UserID: 4},
+		{UserID: 2}, {UserID: 3}, {UserID: 4},
 	}}
 	lab = model.Queue{Name: "Lab 2", Entries: []model.Entry{{UserID: 3}}}
 )

@@ -45,35 +45,20 @@ func TestFullName(t *testing.T) {
 }
 
 func TestQueuePositions(t *testing.T) {
-	q := Queue{Entries: []Entry{
-		{UserID: 1, Done: true},
-		{UserID: 2},
-		{UserID: 3, Done: true},
-		{UserID: 4},
-	}}
+	q := Queue{Entries: []Entry{{UserID: 2}, {UserID: 4}, {UserID: 7}}}
 
 	tests := []struct {
 		user    int64
 		wantPos int
-		wantHas bool
 	}{
-		{user: 1, wantPos: 0, wantHas: true},
-		{user: 2, wantPos: 1, wantHas: true},
-		{user: 3, wantPos: 0, wantHas: true},
-		{user: 4, wantPos: 2, wantHas: true},
-		{user: 5, wantPos: 0, wantHas: false},
+		{user: 2, wantPos: 1},
+		{user: 4, wantPos: 2},
+		{user: 7, wantPos: 3},
+		{user: 5, wantPos: 0},
 	}
 	for _, tt := range tests {
 		if got := q.Position(tt.user); got != tt.wantPos {
 			t.Errorf("Position(%d) = %d, want %d", tt.user, got, tt.wantPos)
 		}
-		if got := q.Has(tt.user); got != tt.wantHas {
-			t.Errorf("Has(%d) = %v, want %v", tt.user, got, tt.wantHas)
-		}
-	}
-
-	w := q.Waiting()
-	if len(w) != 2 || w[0].UserID != 2 || w[1].UserID != 4 {
-		t.Errorf("Waiting() = %+v, want users 2 and 4", w)
 	}
 }

@@ -54,6 +54,16 @@ var migrations = []string{
 		index_msg_id INTEGER NOT NULL DEFAULT 0
 	);
 	`,
+
+	// 3: queues belong to a forum topic, and "done" is gone. People who had
+	// defended were already off the board, so their entries are removed;
+	// the done and done_at columns stay unused, as SQLite can't easily drop
+	// them.
+	`
+	ALTER TABLE queues ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;
+	DELETE FROM entries WHERE done;
+	CREATE INDEX queues_by_topic ON queues (chat_id, thread_id, closed);
+	`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

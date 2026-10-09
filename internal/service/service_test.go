@@ -15,18 +15,15 @@ import (
 
 const chatID = 10
 
-// setup creates a service with one queue: done users first, then waiting
-// users in order. The queue is written straight to storage, so each test
-// only depends on the function it checks.
-func setup(t *testing.T, waiting []int64, done []int64) (*Service, int64) {
+// setup creates a service with one queue holding users in order. The queue
+// is written straight to storage, so each test only depends on the function
+// it checks.
+func setup(t *testing.T, users []int64) (*Service, int64) {
 	t.Helper()
 	store := memory.New()
 
 	var entries []model.Entry
-	for _, id := range done {
-		entries = append(entries, model.Entry{UserID: id, Done: true})
-	}
-	for _, id := range waiting {
+	for _, id := range users {
 		entries = append(entries, model.Entry{UserID: id})
 	}
 
@@ -41,10 +38,9 @@ func setup(t *testing.T, waiting []int64, done []int64) (*Service, int64) {
 	return New(store), q.ID
 }
 
-// waitingIDs returns the waiting users in order and checks the invariants
-// that must hold after every operation: nobody appears twice, and positions
-// run 1..n.
-func waitingIDs(t *testing.T, s *Service, queueID int64) []int64 {
+// ids returns the users in the queue in order and checks that nobody
+// appears twice.
+func ids(t *testing.T, s *Service, queueID int64) []int64 {
 	t.Helper()
 	q, err := s.Queue(context.Background(), queueID)
 	if err != nil {
@@ -52,28 +48,32 @@ func waitingIDs(t *testing.T, s *Service, queueID int64) []int64 {
 	}
 
 	seen := make(map[int64]bool)
+	var out []int64
 	for _, e := range q.Entries {
 		if seen[e.UserID] {
 			t.Fatalf("user %d is in the queue twice", e.UserID)
 		}
 		seen[e.UserID] = true
+		out = append(out, e.UserID)
 	}
+	return out
+}
 
-	var ids []int64
-	for i, e := range q.Waiting() {
-		if got := q.Position(e.UserID); got != i+1 {
-			t.Fatalf("user %d: Position() = %d, want %d", e.UserID, got, i+1)
+// known saves users, so Place can insert them.
+func known(t *testing.T, s *Service, users ...int64) {
+	t.Helper()
+	for _, id := range users {
+		if err := s.SaveUser(context.Background(), model.User{ID: id, FirstName: "Тест"}); err != nil {
+			t.Fatal(err)
 		}
-		ids = append(ids, e.UserID)
 	}
-	return ids
 }
 
 func TestCreate(t *testing.T) {
 	ctx := context.Background()
 	s := New(memory.New())
 
-	first, err := s.Create(ctx, chatID, "  Practice 4  ", 7)
+	first, err := s.Create(ctx, chatID, 0, "  Practice 4  ", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,26 +88,28 @@ func TestCreate(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		chatID  int64
-		qname   string
-		wantErr error
+		name     string
+		chatID   int64
+		threadID int
+		qname    string
+		wantErr  error
 	}{
-		{"empty", chatID, "", model.ErrInvalidName},
-		{"only spaces", chatID, "   ", model.ErrInvalidName},
-		{"65 letters", chatID, strings.Repeat("a", 65), model.ErrInvalidName},
-		{"64 letters", chatID, strings.Repeat("a", 64), nil},
+		{"empty", chatID, 0, "", model.ErrInvalidName},
+		{"only spaces", chatID, 0, "   ", model.ErrInvalidName},
+		{"65 letters", chatID, 0, strings.Repeat("a", 65), model.ErrInvalidName},
+		{"64 letters", chatID, 0, strings.Repeat("a", 64), nil},
 		// Cyrillic letters are 2 bytes each: 64 of them must still fit.
-		{"64 cyrillic letters", chatID, strings.Repeat("я", 64), nil},
-		{"same name", chatID, "Practice 4", model.ErrQueueExists},
-		{"same name, other case", chatID, "PRACTICE 4", model.ErrQueueExists},
-		{"same name with spaces", chatID, " Practice 4 ", model.ErrQueueExists},
-		{"same name, other chat", 20, "Practice 4", nil},
-		{"new name", chatID, "Lab 2", nil},
+		{"64 cyrillic letters", chatID, 0, strings.Repeat("я", 64), nil},
+		{"same name", chatID, 0, "Practice 4", model.ErrQueueExists},
+		{"same name, other case", chatID, 0, "PRACTICE 4", model.ErrQueueExists},
+		{"same name with spaces", chatID, 0, " Practice 4 ", model.ErrQueueExists},
+		{"same name, other chat", 20, 0, "Practice 4", nil},
+		{"same name, other topic", chatID, 5, "Practice 4", nil},
+		{"new name", chatID, 0, "Lab 2", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := s.Create(ctx, tt.chatID, tt.qname, 1)
+			_, err := s.Create(ctx, tt.chatID, tt.threadID, tt.qname, 1)
 			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("Create(%q) error = %v, want %v", tt.qname, err, tt.wantErr)
 			}
@@ -122,7 +124,7 @@ func TestCreateReusesNameOfClosedQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := New(store).Create(ctx, chatID, "Practice 4", 1); err != nil {
+	if _, err := New(store).Create(ctx, chatID, 0, "Practice 4", 1); err != nil {
 		t.Errorf("reusing the name of a closed queue: %v", err)
 	}
 }
@@ -138,7 +140,7 @@ func TestConcurrentCreateSameName(t *testing.T) {
 	created := 0
 	for range n {
 		wg.Go(func() {
-			_, err := s.Create(ctx, chatID, "Practice 4", 1)
+			_, err := s.Create(ctx, chatID, 0, "Practice 4", 1)
 			switch {
 			case err == nil:
 				mu.Lock()
@@ -156,19 +158,24 @@ func TestConcurrentCreateSameName(t *testing.T) {
 	}
 }
 
+// Each topic has its own queues.
 func TestQueueAndOpenQueues(t *testing.T) {
 	ctx := context.Background()
 	s := New(memory.New())
 
-	a, err := s.Create(ctx, chatID, "A", 1)
+	a, err := s.Create(ctx, chatID, 0, "A", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.Create(ctx, chatID, "B", 1)
+	b, err := s.Create(ctx, chatID, 0, "B", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, 20, "other chat", 1); err != nil {
+	topic, err := s.Create(ctx, chatID, 7, "In topic", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(ctx, 20, 0, "other chat", 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,18 +190,26 @@ func TestQueueAndOpenQueues(t *testing.T) {
 		t.Errorf("Queue(999) error = %v, want ErrNotFound", err)
 	}
 
-	open, err := s.OpenQueues(ctx, chatID)
+	open, err := s.OpenQueues(ctx, chatID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(open) != 2 || open[0].ID != a.ID || open[1].ID != b.ID {
-		t.Errorf("OpenQueues(%d) = %+v, want A then B", chatID, open)
+		t.Errorf("OpenQueues(%d, 0) = %+v, want A then B", chatID, open)
+	}
+
+	inTopic, err := s.OpenQueues(ctx, chatID, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inTopic) != 1 || inTopic[0].ID != topic.ID || inTopic[0].ThreadID != 7 {
+		t.Errorf("OpenQueues(%d, 7) = %+v, want only the topic's queue", chatID, inTopic)
 	}
 }
 
 func TestSetBoardMessage(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2}, nil)
+	s, qid := setup(t, []int64{1, 2})
 
 	if err := s.SetBoardMessage(ctx, qid, 555); err != nil {
 		t.Fatal(err)
@@ -207,8 +222,8 @@ func TestSetBoardMessage(t *testing.T) {
 	if q.BoardMsgID != 555 {
 		t.Errorf("BoardMsgID = %d, want 555", q.BoardMsgID)
 	}
-	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{1, 2}) {
-		t.Errorf("waiting = %v, want the queue unchanged", got)
+	if got := ids(t, s, qid); !slices.Equal(got, []int64{1, 2}) {
+		t.Errorf("queue = %v, want it unchanged", got)
 	}
 
 	if err := s.SetBoardMessage(ctx, 999, 1); !errors.Is(err, model.ErrNotFound) {
@@ -225,12 +240,11 @@ func TestJoin(t *testing.T) {
 		wantErr error
 	}{
 		{"new user goes last", 9, []int64{1, 2, 3, 9}, 4, nil},
-		{"already waiting", 2, []int64{1, 2, 3}, 0, model.ErrAlreadyJoined},
-		{"already done", 5, []int64{1, 2, 3}, 0, model.ErrAlreadyDone},
+		{"already in the queue", 2, []int64{1, 2, 3}, 0, model.ErrAlreadyJoined},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
+			s, qid := setup(t, []int64{1, 2, 3})
 			pos, err := s.Join(context.Background(), qid, tt.user)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
@@ -238,15 +252,15 @@ func TestJoin(t *testing.T) {
 			if pos != tt.wantPos {
 				t.Errorf("position = %d, want %d", pos, tt.wantPos)
 			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
+			if got := ids(t, s, qid); !slices.Equal(got, tt.want) {
+				t.Errorf("queue = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestJoinEmptyQueue(t *testing.T) {
-	s, qid := setup(t, nil, nil)
+	s, qid := setup(t, nil)
 	pos, err := s.Join(context.Background(), qid, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -267,17 +281,16 @@ func TestLeave(t *testing.T) {
 		{"middle", 2, []int64{1, 3}, nil},
 		{"last", 3, []int64{1, 2}, nil},
 		{"not in queue", 9, []int64{1, 2, 3}, model.ErrNotInQueue},
-		{"already done", 5, []int64{1, 2, 3}, model.ErrNotInQueue},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
+			s, qid := setup(t, []int64{1, 2, 3})
 			err := s.Leave(context.Background(), qid, tt.user)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
+			if got := ids(t, s, qid); !slices.Equal(got, tt.want) {
+				t.Errorf("queue = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -285,7 +298,7 @@ func TestLeave(t *testing.T) {
 
 func TestLeaveThenJoinAgain(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2, 3}, nil)
+	s, qid := setup(t, []int64{1, 2, 3})
 
 	if err := s.Leave(ctx, qid, 1); err != nil {
 		t.Fatal(err)
@@ -311,11 +324,10 @@ func TestToEnd(t *testing.T) {
 		{"middle goes last", 2, []int64{1, 3, 2}, 3, nil},
 		{"already last", 3, []int64{1, 2, 3}, 3, nil},
 		{"not in queue", 9, []int64{1, 2, 3}, 0, model.ErrNotInQueue},
-		{"already done", 5, []int64{1, 2, 3}, 0, model.ErrNotInQueue},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
+			s, qid := setup(t, []int64{1, 2, 3})
 			pos, err := s.ToEnd(context.Background(), qid, tt.user)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
@@ -323,67 +335,16 @@ func TestToEnd(t *testing.T) {
 			if pos != tt.wantPos {
 				t.Errorf("position = %d, want %d", pos, tt.wantPos)
 			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
+			if got := ids(t, s, qid); !slices.Equal(got, tt.want) {
+				t.Errorf("queue = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestDone(t *testing.T) {
-	tests := []struct {
-		name    string
-		user    int64
-		want    []int64
-		wantErr error
-	}{
-		{"first", 1, []int64{2, 3}, nil},
-		{"not first", 2, []int64{1, 3}, nil},
-		{"not in queue", 9, []int64{1, 2, 3}, model.ErrNotInQueue},
-		{"twice", 5, []int64{1, 2, 3}, model.ErrNotInQueue},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
-			err := s.Done(context.Background(), qid, tt.user)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("error = %v, want %v", err, tt.wantErr)
-			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// A done user stays on the sheet with a time, so the board can list them,
-// and they can't join again.
-func TestDoneKeepsEntry(t *testing.T) {
-	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2}, nil)
-
-	if err := s.Done(ctx, qid, 1); err != nil {
-		t.Fatal(err)
-	}
-
-	q, err := s.Queue(ctx, qid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !q.Has(1) {
-		t.Fatal("done user was removed from the queue")
-	}
-	if q.Entries[0].DoneAt.IsZero() {
-		t.Error("DoneAt is not set")
-	}
-	if _, err := s.Join(ctx, qid, 1); !errors.Is(err, model.ErrAlreadyDone) {
-		t.Errorf("Join after Done: error = %v, want ErrAlreadyDone", err)
 	}
 }
 
 func TestClose(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2}, nil)
+	s, qid := setup(t, []int64{1, 2})
 
 	if err := s.Close(ctx, qid); err != nil {
 		t.Fatal(err)
@@ -396,11 +357,11 @@ func TestClose(t *testing.T) {
 	if !q.Closed {
 		t.Error("queue is not closed")
 	}
-	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{1, 2}) {
-		t.Errorf("waiting = %v, want the people kept after closing", got)
+	if got := ids(t, s, qid); !slices.Equal(got, []int64{1, 2}) {
+		t.Errorf("queue = %v, want the people kept after closing", got)
 	}
 
-	open, err := s.OpenQueues(ctx, chatID)
+	open, err := s.OpenQueues(ctx, chatID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,41 +370,7 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func TestSwapWith(t *testing.T) {
-	tests := []struct {
-		name    string
-		user    int64
-		target  int64
-		want    []int64
-		wantRes Swapped
-		wantErr error
-	}{
-		{"forward", 3, 1, []int64{3, 2, 1, 4}, Swapped{TargetID: 1, From: 3, To: 1}, nil},
-		{"backward", 1, 4, []int64{4, 2, 3, 1}, Swapped{TargetID: 4, From: 1, To: 4}, nil},
-		{"neighbours", 2, 3, []int64{1, 3, 2, 4}, Swapped{TargetID: 3, From: 2, To: 3}, nil},
-		{"self", 2, 2, []int64{1, 2, 3, 4}, Swapped{}, model.ErrSelfSwap},
-		{"user not in queue", 9, 1, []int64{1, 2, 3, 4}, Swapped{}, model.ErrNotInQueue},
-		{"user done", 5, 1, []int64{1, 2, 3, 4}, Swapped{}, model.ErrNotInQueue},
-		{"target not in queue", 1, 9, []int64{1, 2, 3, 4}, Swapped{}, model.ErrTargetNotInQueue},
-		{"target done", 1, 5, []int64{1, 2, 3, 4}, Swapped{}, model.ErrTargetNotInQueue},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3, 4}, []int64{5})
-			res, err := s.SwapWith(context.Background(), qid, tt.user, tt.target)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("error = %v, want %v", err, tt.wantErr)
-			}
-			if res != tt.wantRes {
-				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
-			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
+// /swap <pos>: the sender swaps with whoever is at pos.
 func TestSwapWithPosition(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -453,17 +380,17 @@ func TestSwapWithPosition(t *testing.T) {
 		wantRes Swapped
 		wantErr error
 	}{
-		{"with last", 1, 3, []int64{3, 2, 1}, Swapped{TargetID: 3, From: 1, To: 3}, nil},
-		{"with first", 3, 1, []int64{3, 2, 1}, Swapped{TargetID: 1, From: 3, To: 1}, nil},
+		{"with last", 1, 3, []int64{3, 2, 1}, Swapped{UserID: 1, TargetID: 3, From: 1, To: 3}, nil},
+		{"with first", 3, 1, []int64{3, 2, 1}, Swapped{UserID: 3, TargetID: 1, From: 3, To: 1}, nil},
+		{"neighbours", 2, 3, []int64{1, 3, 2}, Swapped{UserID: 2, TargetID: 3, From: 2, To: 3}, nil},
 		{"own position", 1, 1, []int64{1, 2, 3}, Swapped{}, model.ErrSelfSwap},
 		{"zero", 1, 0, []int64{1, 2, 3}, Swapped{}, model.ErrInvalidPosition},
-		{"negative", 1, -1, []int64{1, 2, 3}, Swapped{}, model.ErrInvalidPosition},
 		{"past the end", 1, 4, []int64{1, 2, 3}, Swapped{}, model.ErrInvalidPosition},
-		{"user not in queue", 9, 2, []int64{1, 2, 3}, Swapped{}, model.ErrNotInQueue},
+		{"sender not in queue", 9, 2, []int64{1, 2, 3}, Swapped{}, model.ErrNotInQueue},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
+			s, qid := setup(t, []int64{1, 2, 3})
 			res, err := s.SwapWithPosition(context.Background(), qid, tt.user, tt.pos)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
@@ -471,41 +398,196 @@ func TestSwapWithPosition(t *testing.T) {
 			if res != tt.wantRes {
 				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
 			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
+			if got := ids(t, s, qid); !slices.Equal(got, tt.want) {
+				t.Errorf("queue = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-// Positions count only waiting people: with a done user in front,
-// "#1" on the board is the first person still waiting.
-func TestSwapWithPositionSkipsDone(t *testing.T) {
-	s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
-
-	res, err := s.SwapWithPosition(context.Background(), qid, 3, 1)
-	if err != nil {
-		t.Fatal(err)
+// /swap <who> <who>: two other people swap; each is a position or an ID.
+func TestSwap(t *testing.T) {
+	tests := []struct {
+		name    string
+		a, b    int64
+		want    []int64
+		wantRes Swapped
+		wantErr error
+	}{
+		{"by positions", 1, 3, []int64{1003, 1002, 1001, 1004}, Swapped{UserID: 1001, TargetID: 1003, From: 1, To: 3}, nil},
+		{"by IDs", 1002, 1004, []int64{1001, 1004, 1003, 1002}, Swapped{UserID: 1002, TargetID: 1004, From: 2, To: 4}, nil},
+		{"position and ID", 4, 1001, []int64{1004, 1002, 1003, 1001}, Swapped{UserID: 1004, TargetID: 1001, From: 4, To: 1}, nil},
+		{"same person", 2, 1002, nil, Swapped{}, model.ErrSelfSwap},
+		{"first not in queue", 7777, 1, nil, Swapped{}, model.ErrTargetNotInQueue},
+		{"second not in queue", 1, 7777, nil, Swapped{}, model.ErrTargetNotInQueue},
 	}
-	if res.TargetID != 1 {
-		t.Errorf("swapped with user %d, want user 1 (the first waiting)", res.TargetID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := []int64{1001, 1002, 1003, 1004}
+			s, qid := setup(t, before)
+			res, err := s.Swap(context.Background(), qid, tt.a, tt.b)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if res != tt.wantRes {
+				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
+			}
+			want := tt.want
+			if tt.wantErr != nil {
+				want = before // a refused swap changes nothing
+			}
+			if got := ids(t, s, qid); !slices.Equal(got, want) {
+				t.Errorf("queue = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
-// Swapped reports queue positions, not lines in Entries. With done users
-// in front the two differ, so this catches mixing them up.
-func TestSwappedReportsPositions(t *testing.T) {
-	for _, done := range [][]int64{nil, {5}, {5, 6}} {
-		s, qid := setup(t, []int64{1, 2, 3}, done)
+// /delete <who>: a person leaves, everyone after them moves up.
+func TestRemove(t *testing.T) {
+	tests := []struct {
+		name    string
+		who     int64
+		want    []int64
+		wantRes Removed
+		wantErr error
+	}{
+		{"by position", 2, []int64{1001, 1003, 1004}, Removed{UserID: 1002, From: 2}, nil},
+		{"first", 1, []int64{1002, 1003, 1004}, Removed{UserID: 1001, From: 1}, nil},
+		{"by ID", 1004, []int64{1001, 1002, 1003}, Removed{UserID: 1004, From: 4}, nil},
+		{"position past the end", 5, nil, Removed{}, model.ErrTargetNotInQueue},
+		{"unknown ID", 7777, nil, Removed{}, model.ErrTargetNotInQueue},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := []int64{1001, 1002, 1003, 1004}
+			s, qid := setup(t, before)
+			res, err := s.Remove(context.Background(), qid, tt.who)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if res != tt.wantRes {
+				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
+			}
+			want := tt.want
+			if tt.wantErr != nil {
+				want = before
+			}
+			if got := ids(t, s, qid); !slices.Equal(got, want) {
+				t.Errorf("queue = %v, want %v", got, want)
+			}
+		})
+	}
+}
 
-		res, err := s.SwapWith(context.Background(), qid, 2, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := Swapped{TargetID: 3, From: 2, To: 3}
-		if res != want {
-			t.Errorf("with %d done in front: result = %+v, want %+v", len(done), res, want)
-		}
+// /place moves someone already in the queue.
+func TestPlace(t *testing.T) {
+	tests := []struct {
+		name    string
+		who     int64
+		to      int
+		want    []int64
+		wantRes Placed
+		wantErr error
+	}{
+		// Queue: 1 2 3 4 1005.
+		{"last back to third, by position", 5, 3, []int64{1, 2, 1005, 3, 4}, Placed{UserID: 1005, From: 5, To: 3}, nil},
+		{"to the front", 4, 1, []int64{4, 1, 2, 3, 1005}, Placed{UserID: 4, From: 4, To: 1}, nil},
+		{"forward to the end", 1, 5, []int64{2, 3, 4, 1005, 1}, Placed{UserID: 1, From: 1, To: 5}, nil},
+		{"one step back", 2, 3, []int64{1, 3, 2, 4, 1005}, Placed{UserID: 2, From: 2, To: 3}, nil},
+		{"by ID", 1005, 2, []int64{1, 1005, 2, 3, 4}, Placed{UserID: 1005, From: 5, To: 2}, nil},
+		{"to the end by default", 2, AtEnd, []int64{1, 3, 4, 1005, 2}, Placed{UserID: 2, From: 2, To: 5}, nil},
+		{"last to the end by default", 5, AtEnd, nil, Placed{}, model.ErrAlreadyThere},
+		{"already there", 3, 3, nil, Placed{}, model.ErrAlreadyThere},
+		{"negative place", 2, -1, nil, Placed{}, model.ErrInvalidPosition},
+		{"past the end", 2, 6, nil, Placed{}, model.ErrInvalidPosition},
+		{"not in the queue", 2000, 2, nil, Placed{}, model.ErrTargetNotInQueue},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := []int64{1, 2, 3, 4, 1005}
+			s, qid := setup(t, before)
+
+			res, err := s.Place(context.Background(), qid, tt.who, tt.to)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if res != tt.wantRes {
+				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
+			}
+			want := tt.want
+			if tt.wantErr != nil {
+				want = before // a refused place changes nothing
+			}
+			if got := ids(t, s, qid); !slices.Equal(got, want) {
+				t.Errorf("queue = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// /add puts someone new into the queue, at the end by default.
+func TestAdd(t *testing.T) {
+	tests := []struct {
+		name    string
+		user    int64
+		to      int
+		want    []int64
+		wantRes Placed
+		wantErr error
+	}{
+		// Queue: 1001 1002 1003; 2000 is known to the bot, 7777 isn't.
+		{"at the end by default", 2000, AtEnd, []int64{1001, 1002, 1003, 2000}, Placed{UserID: 2000, To: 4}, nil},
+		{"at a place", 2000, 2, []int64{1001, 2000, 1002, 1003}, Placed{UserID: 2000, To: 2}, nil},
+		{"at the front", 2000, 1, []int64{2000, 1001, 1002, 1003}, Placed{UserID: 2000, To: 1}, nil},
+		{"right after the last", 2000, 4, []int64{1001, 1002, 1003, 2000}, Placed{UserID: 2000, To: 4}, nil},
+		{"past the end", 2000, 5, nil, Placed{}, model.ErrInvalidPosition},
+		{"negative place", 2000, -1, nil, Placed{}, model.ErrInvalidPosition},
+		{"already in the queue", 1002, AtEnd, nil, Placed{}, model.ErrTargetInQueue},
+		{"unknown user", 7777, AtEnd, nil, Placed{}, model.ErrUnknownUser},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := []int64{1001, 1002, 1003}
+			s, qid := setup(t, before)
+			known(t, s, 1002, 2000)
+
+			res, err := s.Add(context.Background(), qid, tt.user, tt.to)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if res != tt.wantRes {
+				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
+			}
+			want := tt.want
+			if tt.wantErr != nil {
+				want = before
+			}
+			if got := ids(t, s, qid); !slices.Equal(got, want) {
+				t.Errorf("queue = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// Someone who pressed "Выйти" by mistake comes back to their old place.
+func TestAddAfterLeaveByMistake(t *testing.T) {
+	ctx := context.Background()
+	s, qid := setup(t, []int64{1001, 1002, 1003, 1004})
+	known(t, s, 1002)
+	if err := s.Leave(ctx, qid, 1002); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Add(ctx, qid, 1002, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Added() || res.To != 2 {
+		t.Errorf("result = %+v, want an add at №2", res)
+	}
+	if got := ids(t, s, qid); !slices.Equal(got, []int64{1001, 1002, 1003, 1004}) {
+		t.Errorf("queue = %v, want everyone back in their old order", got)
 	}
 }
 
@@ -522,18 +604,19 @@ func TestClosedQueueRejectsChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(store)
+	known(t, s, 3)
 
 	ops := map[string]func() error{
 		"join":             func() error { _, err := s.Join(ctx, q.ID, 9); return err },
 		"leave":            func() error { return s.Leave(ctx, q.ID, 1) },
 		"toEnd":            func() error { _, err := s.ToEnd(ctx, q.ID, 1); return err },
-		"swapWith":         func() error { _, err := s.SwapWith(ctx, q.ID, 1, 2); return err },
 		"swapWithPosition": func() error { _, err := s.SwapWithPosition(ctx, q.ID, 1, 2); return err },
-		"setBoardMessage":  func() error { return s.SetBoardMessage(ctx, q.ID, 1) },
-		"done":             func() error { return s.Done(ctx, q.ID, 1) },
-		"close":            func() error { return s.Close(ctx, q.ID) },
-		"undo":             func() error { _, err := s.Undo(ctx, q.ID, 1); return err },
+		"swap":             func() error { _, err := s.Swap(ctx, q.ID, 1, 2); return err },
+		"remove":           func() error { _, err := s.Remove(ctx, q.ID, 1); return err },
 		"place":            func() error { _, err := s.Place(ctx, q.ID, 1, 2); return err },
+		"add":              func() error { _, err := s.Add(ctx, q.ID, 3, AtEnd); return err },
+		"setBoardMessage":  func() error { return s.SetBoardMessage(ctx, q.ID, 1) },
+		"close":            func() error { return s.Close(ctx, q.ID) },
 	}
 	for name, op := range ops {
 		if err := op(); !errors.Is(err, model.ErrQueueClosed) {
@@ -547,13 +630,14 @@ func TestUnknownQueue(t *testing.T) {
 	s := New(memory.New())
 
 	ops := map[string]func() error{
-		"join":             func() error { _, err := s.Join(ctx, 999, 1); return err },
-		"leave":            func() error { return s.Leave(ctx, 999, 1) },
-		"toEnd":            func() error { _, err := s.ToEnd(ctx, 999, 1); return err },
-		"swapWith":         func() error { _, err := s.SwapWith(ctx, 999, 1, 2); return err },
-		"swapWithPosition": func() error { _, err := s.SwapWithPosition(ctx, 999, 1, 2); return err },
-		"done":             func() error { return s.Done(ctx, 999, 1) },
-		"close":            func() error { return s.Close(ctx, 999) },
+		"join":   func() error { _, err := s.Join(ctx, 999, 1); return err },
+		"leave":  func() error { return s.Leave(ctx, 999, 1) },
+		"toEnd":  func() error { _, err := s.ToEnd(ctx, 999, 1); return err },
+		"swap":   func() error { _, err := s.Swap(ctx, 999, 1, 2); return err },
+		"remove": func() error { _, err := s.Remove(ctx, 999, 1); return err },
+		"place":  func() error { _, err := s.Place(ctx, 999, 1, 1); return err },
+		"add":    func() error { _, err := s.Add(ctx, 999, 1, AtEnd); return err },
+		"close":  func() error { return s.Close(ctx, 999) },
 	}
 	for name, op := range ops {
 		if err := op(); !errors.Is(err, model.ErrNotFound) {
@@ -566,7 +650,7 @@ func TestUnknownQueue(t *testing.T) {
 // would be lost, because each one loads, changes and saves the whole queue.
 func TestConcurrentJoin(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, nil, nil)
+	s, qid := setup(t, nil)
 
 	const n = 100
 	var wg sync.WaitGroup
@@ -579,28 +663,28 @@ func TestConcurrentJoin(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := waitingIDs(t, s, qid); len(got) != n {
-		t.Fatalf("%d users waiting, want %d", len(got), n)
+	if got := ids(t, s, qid); len(got) != n {
+		t.Fatalf("%d users in the queue, want %d", len(got), n)
 	}
 }
 
-// Everyone presses random buttons at once. Whatever order they run in,
-// the queue must stay valid: no duplicates, positions 1..n.
-// Errors are ignored on purpose: random presses often fail, and that's fine.
+// Everyone does random things at once. Whatever order they run in, nobody
+// may end up in the queue twice.
 func TestConcurrentMixedOperations(t *testing.T) {
 	ctx := context.Background()
 	const n = 30
 	users := make([]int64, n)
 	for i := range users {
-		users[i] = int64(i + 1)
+		users[i] = int64(1000 + i)
 	}
-	s, qid := setup(t, users, nil)
+	s, qid := setup(t, users)
+	known(t, s, users...)
 
 	var wg sync.WaitGroup
 	for _, u := range users {
 		wg.Go(func() {
 			for range 20 {
-				switch rand.IntN(6) {
+				switch rand.IntN(8) {
 				case 0:
 					_, _ = s.Join(ctx, qid, u)
 				case 1:
@@ -608,23 +692,27 @@ func TestConcurrentMixedOperations(t *testing.T) {
 				case 2:
 					_, _ = s.ToEnd(ctx, qid, u)
 				case 3:
-					_, _ = s.SwapWith(ctx, qid, u, users[rand.IntN(n)])
-				case 4:
 					_, _ = s.SwapWithPosition(ctx, qid, u, rand.IntN(n)+1)
+				case 4:
+					_, _ = s.Swap(ctx, qid, int64(rand.IntN(n)+1), u)
 				case 5:
-					_ = s.Done(ctx, qid, u)
+					_, _ = s.Remove(ctx, qid, int64(rand.IntN(n)+1))
+				case 6:
+					_, _ = s.Place(ctx, qid, u, rand.IntN(n)+1)
+				case 7:
+					_, _ = s.Add(ctx, qid, u, rand.IntN(n)+1)
 				}
 			}
 		})
 	}
 	wg.Wait()
 
-	waitingIDs(t, s, qid)
+	ids(t, s, qid)
 }
 
 func TestNames(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, []int64{2, 3}, []int64{5})
+	s, qid := setup(t, []int64{2, 3, 5})
 
 	for _, u := range []model.User{
 		{ID: 1, FirstName: "Anna", LastName: "Kuznetsova"},
@@ -640,13 +728,11 @@ func TestNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q.CreatedBy = 1
-
 	got, err := s.Names(ctx, q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// User 1 created the queue but isn't in it, and user 3 was never saved.
+	// User 1 is known but not in the queue, and user 3 was never saved.
 	want := map[int64]string{2: "Ivan", 5: "@olga_v"}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
@@ -660,7 +746,7 @@ func TestNames(t *testing.T) {
 
 func TestSaveUserUpdatesName(t *testing.T) {
 	ctx := context.Background()
-	s, qid := setup(t, []int64{2}, nil)
+	s, qid := setup(t, []int64{2})
 
 	if err := s.SaveUser(ctx, model.User{ID: 2, FirstName: "Ivan"}); err != nil {
 		t.Fatal(err)
@@ -679,174 +765,5 @@ func TestSaveUserUpdatesName(t *testing.T) {
 	}
 	if got[2] != "Ivan Tarasov" {
 		t.Errorf("name after rename = %q, want %q", got[2], "Ivan Tarasov")
-	}
-}
-
-func TestUndo(t *testing.T) {
-	tests := []struct {
-		name    string
-		user    int64
-		want    []int64
-		wantPos int
-		wantErr error
-	}{
-		// setup puts done users first, so 5 comes back as #1.
-		{"done user returns", 5, []int64{5, 1, 2, 3}, 1, nil},
-		{"still waiting", 2, []int64{1, 2, 3}, 0, model.ErrNotDone},
-		{"not in queue", 9, []int64{1, 2, 3}, 0, model.ErrNotInQueue},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, qid := setup(t, []int64{1, 2, 3}, []int64{5})
-			pos, err := s.Undo(context.Background(), qid, tt.user)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("error = %v, want %v", err, tt.wantErr)
-			}
-			if pos != tt.wantPos {
-				t.Errorf("position = %d, want %d", pos, tt.wantPos)
-			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, tt.want) {
-				t.Errorf("waiting = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// Done then Undo puts the user back exactly where they were, even after
-// others joined behind them in the meantime.
-func TestDoneThenUndoRestoresPlace(t *testing.T) {
-	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2, 3}, nil)
-
-	if err := s.Done(ctx, qid, 2); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Join(ctx, qid, 4); err != nil {
-		t.Fatal(err)
-	}
-	pos, err := s.Undo(ctx, qid, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pos != 2 {
-		t.Errorf("position after undo = %d, want 2", pos)
-	}
-	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{1, 2, 3, 4}) {
-		t.Errorf("waiting = %v, want [1 2 3 4]", got)
-	}
-
-	q, err := s.Queue(ctx, qid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range q.Entries {
-		if e.UserID == 2 && !e.DoneAt.IsZero() {
-			t.Error("DoneAt should be cleared by Undo")
-		}
-	}
-}
-
-func TestPlace(t *testing.T) {
-	tests := []struct {
-		name    string
-		who     int64
-		to      int
-		want    []int64
-		wantRes Placed
-		wantErr error
-	}{
-		// Waiting: 1 2 3 4 1005; 9 done (first in the slice); 2000 is a
-		// user the bot has seen but who isn't in the queue.
-		{"last back to third, by position", 5, 3, []int64{1, 2, 1005, 3, 4}, Placed{UserID: 1005, From: 5, To: 3}, nil},
-		{"to the front", 4, 1, []int64{4, 1, 2, 3, 1005}, Placed{UserID: 4, From: 4, To: 1}, nil},
-		{"forward to the end", 1, 5, []int64{2, 3, 4, 1005, 1}, Placed{UserID: 1, From: 1, To: 5}, nil},
-		{"one step back", 2, 3, []int64{1, 3, 2, 4, 1005}, Placed{UserID: 2, From: 2, To: 3}, nil},
-		{"waiting person by ID", 1005, 2, []int64{1, 1005, 2, 3, 4}, Placed{UserID: 1005, From: 5, To: 2}, nil},
-		{"insert by ID", 2000, 2, []int64{1, 2000, 2, 3, 4, 1005}, Placed{UserID: 2000, To: 2}, nil},
-		{"insert at the front", 2000, 1, []int64{2000, 1, 2, 3, 4, 1005}, Placed{UserID: 2000, To: 1}, nil},
-		{"insert right after the last", 2000, 6, []int64{1, 2, 3, 4, 1005, 2000}, Placed{UserID: 2000, To: 6}, nil},
-		{"already there", 3, 3, nil, Placed{}, model.ErrAlreadyThere},
-		{"move to 0", 2, 0, nil, Placed{}, model.ErrInvalidPosition},
-		{"move past the end", 2, 6, nil, Placed{}, model.ErrInvalidPosition},
-		{"insert past the end", 2000, 7, nil, Placed{}, model.ErrInvalidPosition},
-		{"unknown ID", 777, 2, nil, Placed{}, model.ErrUnknownUser},
-		{"position past the queue", 9000, 2, nil, Placed{}, model.ErrUnknownUser},
-		{"done person", 9, 2, nil, Placed{}, model.ErrTargetDone},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			waiting := []int64{1, 2, 3, 4, 1005}
-			s, qid := setup(t, waiting, []int64{9})
-			for _, id := range []int64{1005, 2000} {
-				if err := s.SaveUser(ctx, model.User{ID: id, FirstName: "Тест"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			res, err := s.Place(ctx, qid, tt.who, tt.to)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("error = %v, want %v", err, tt.wantErr)
-			}
-			if res != tt.wantRes {
-				t.Errorf("result = %+v, want %+v", res, tt.wantRes)
-			}
-			want := tt.want
-			if tt.wantErr != nil {
-				want = waiting // a refused place changes nothing
-			}
-			if got := waitingIDs(t, s, qid); !slices.Equal(got, want) {
-				t.Errorf("waiting = %v, want %v", got, want)
-			}
-		})
-	}
-}
-
-// Someone who pressed "Выйти" by mistake comes back to their old place.
-// Real Telegram IDs are far larger than any position, as here.
-func TestPlaceAfterLeaveByMistake(t *testing.T) {
-	ctx := context.Background()
-	s, qid := setup(t, []int64{1001, 1002, 1003, 1004}, nil)
-	if err := s.SaveUser(ctx, model.User{ID: 1002, FirstName: "Боря"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Leave(ctx, qid, 1002); err != nil {
-		t.Fatal(err)
-	}
-
-	res, err := s.Place(ctx, qid, 1002, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Inserted() || res.To != 2 {
-		t.Errorf("result = %+v, want an insert at №2", res)
-	}
-	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{1001, 1002, 1003, 1004}) {
-		t.Errorf("waiting = %v, want everyone back in their old order", got)
-	}
-}
-
-// Done entries in the middle of the slice stay where they are, and
-// positions still count only people waiting.
-func TestPlaceKeepsDoneInPlace(t *testing.T) {
-	ctx := context.Background()
-	s, qid := setup(t, []int64{1, 2, 3}, nil)
-	if err := s.Done(ctx, qid, 2); err != nil {
-		t.Fatal(err)
-	}
-
-	// Waiting is now 1 3; move 3 to the front.
-	if _, err := s.Place(ctx, qid, 2, 1); err != nil {
-		t.Fatal(err)
-	}
-	if got := waitingIDs(t, s, qid); !slices.Equal(got, []int64{3, 1}) {
-		t.Errorf("waiting = %v, want [3 1]", got)
-	}
-	q, err := s.Queue(ctx, qid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !q.Has(2) || q.Position(2) != 0 {
-		t.Error("the done user should still be in the queue, not waiting")
 	}
 }

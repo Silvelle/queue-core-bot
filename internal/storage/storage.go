@@ -12,6 +12,10 @@ type Storage interface {
 	SaveUser(ctx context.Context, u model.User) error
 	// User returns model.ErrNotFound if the user is unknown.
 	User(ctx context.Context, id int64) (model.User, error)
+	// UserByUsername finds a user by their Telegram username, without the
+	// "@" and ignoring case. It returns model.ErrNotFound if no known user
+	// has it.
+	UserByUsername(ctx context.Context, username string) (model.User, error)
 
 	// CreateQueue assigns a new ID and returns the stored queue.
 	CreateQueue(ctx context.Context, q model.Queue) (model.Queue, error)
@@ -20,6 +24,7 @@ type Storage interface {
 	// UpdateQueue replaces the stored queue, entries included.
 	// It returns model.ErrNotFound if the queue does not exist.
 	UpdateQueue(ctx context.Context, q model.Queue) error
-	// OpenQueues returns the chat's queues that are not closed, oldest first.
-	OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, error)
+	// OpenQueues returns the queues of a chat's topic that are not closed,
+	// oldest first. threadID is 0 for a group without topics.
+	OpenQueues(ctx context.Context, chatID int64, threadID int) ([]model.Queue, error)
 }

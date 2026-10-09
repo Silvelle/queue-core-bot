@@ -11,25 +11,34 @@ import (
 const (
 	helpText = `Я веду очереди на защиту в этом чате.
 
-/new <название> — создать очередь, например /new Практика 4
-/swap <номер> — поменяться местами с тем, кто стоит на этом месте
-/place <номер или ID> <место> — добавить человека в очередь по ID или по номеру в очереди на определённое место
+Обозначения:
+<…> — обязательно
+<*…> — можно не указывать
+«или» — подойдёт любой из вариантов
+
+/new <название> — создать очередь: /new Практика 4
+/swap <номер> — поменяться с тем, кто на этом месте: /swap 5
+/swap <кто> <с кем> — поменять местами двух человек: /swap 1 3
+/add <ID или @имя> <*место> — добавить человека, без места — в конец: /add @username 3
+/place <номер, ID или @имя> <*место> — переставить человека, без места — в конец: /place 7 3
+/delete <номер, ID или @имя> — убрать человека из очереди: /delete 4
 /close <название> — закрыть очередь
 /queues — список открытых очередей
 /show <название> — показать доску очереди внизу чата
 
-Кнопки под очередью действуют только на того, кто их нажал.
-«↩ Сброс» возвращает на прежнее место, если вы нажали «✓ Сдано» по ошибке.
-
-Если открыто несколько очередей, отправляйте /swap и /close ответом на доску нужной.`
+Встать в очередь и выйти — кнопками под доской.
+/add можно отправить ответом на сообщение человека, тогда имя не нужно.
+Если очередей несколько, отправьте команду ответом на доску нужной.`
 
 	privateChatText = "Очереди работают в групповых чатах. Добавьте меня в группу и отправьте там /new <название>."
 	newUsageText    = "Укажите название, например /new Практика 4"
 	badButtonText   = "Эта кнопка больше не работает."
 	genericErrText  = "Что-то пошло не так. Попробуйте ещё раз."
 
-	swapUsageText   = "Укажите номер места, например /swap 5"
-	placeUsageText  = "Укажите, кого и на какое место поставить: /place 7 3 — человека с №7 на №3. Вместо номера можно указать ID, например чтобы вернуть того, кто нажал «Выйти»."
+	swapUsageText   = "Укажите, с кем поменяться: /swap 5. Или кого с кем: /swap 1 3 — по номерам или ID."
+	deleteUsageText = "Укажите, кого убрать из очереди: /delete 4 — по номеру или ID."
+	placeUsageText  = "Укажите, кого и куда переставить: /place 7 3 — человека с №7 на №3, /place 7 — в конец. Вместо номера можно указать ID или @имя."
+	addUsageText    = "Укажите, кого добавить: /add @имя, /add <ID> или ответьте командой /add на сообщение этого человека. Место можно указать после: /add @имя 3, иначе — в конец."
 	closeUsageText  = "Укажите очередь, например /close Практика 4, или отправьте /close ответом на её доску."
 	noQueuesText    = "Здесь нет открытых очередей. Создайте: /new <название>"
 	whichQueueText  = "Открыто несколько очередей. Отправьте команду ответом на доску нужной."
@@ -37,7 +46,6 @@ const (
 	showUsageText   = "Укажите очередь, например /show Практика 4, или отправьте /show ответом на её доску."
 
 	leftText = "Вы вышли из очереди."
-	doneText = "Отмечено: сдано. Если по ошибке, нажмите «↩ Сброс»."
 )
 
 // errorTexts is what a person sees for each rule the service enforces.
@@ -45,17 +53,15 @@ var errorTexts = map[error]string{
 	model.ErrNotFound:         "Этой очереди больше нет.",
 	model.ErrQueueClosed:      "Очередь закрыта.",
 	model.ErrAlreadyJoined:    "Вы уже в очереди.",
-	model.ErrAlreadyDone:      "Вы уже сдали в этой очереди. Если по ошибке, нажмите «↩ Сброс».",
 	model.ErrNotInQueue:       "Вас нет в этой очереди. Сначала нажмите «+ Записаться».",
 	model.ErrQueueExists:      "Очередь с таким названием уже открыта.",
 	model.ErrInvalidName:      "Название должно быть от 1 до 64 символов.",
 	model.ErrInvalidPosition:  "На этом месте никого нет.",
 	model.ErrSelfSwap:         "Нельзя поменяться местами с самим собой.",
-	model.ErrTargetNotInQueue: "Этого человека нет среди ожидающих.",
-	model.ErrNotDone:          "Вы ещё не отмечали «Сдано».",
+	model.ErrTargetNotInQueue: "Этого человека нет в очереди. Добавить его можно командой /add.",
+	model.ErrTargetInQueue:    "Этот человек уже в очереди. Переставить его можно командой /place.",
 	model.ErrAlreadyThere:     "Этот человек уже стоит на этом месте.",
-	model.ErrTargetDone:       "Этот человек уже сдал. Вернуть его может только он сам — кнопкой «↩ Сброс».",
-	model.ErrUnknownUser:      "На этом месте никого нет, и человека с таким ID я не знаю. Он должен хотя бы раз нажать кнопку бота.",
+	model.ErrUnknownUser:      "Человека с таким ID нет в этом чате.",
 }
 
 // errorText turns a service error into a short message. known is false for
@@ -76,9 +82,6 @@ func joinedText(pos int) string {
 func toEndText(pos int) string {
 	return fmt.Sprintf("Вы перешли в конец. Ваше место: №%d.", pos)
 }
-func undoText(pos int) string {
-	return fmt.Sprintf("Отметка снята. Ваше место: №%d.", pos)
-}
 
 func whereText(pos, total int) string {
 	if pos == 0 {
@@ -96,13 +99,23 @@ func swappedText(queue, user, target string, from, to int) string {
 	return fmt.Sprintf("%s: %s №%d ⇄ %s №%d", queue, user, from, target, to)
 }
 
-// placedText is the public line posted after /place: it moves other people
-// down, so everyone should see it.
+// placedText is the public line posted after /place and /add: they move
+// other people, so everyone should see it.
 func placedText(queue, user string, p service.Placed) string {
-	if p.Inserted() {
-		return fmt.Sprintf("%s: %s встаёт на №%d", queue, user, p.To)
+	if p.Added() {
+		return fmt.Sprintf("%s добавлен в очередь под номером %d", user, p.To)
 	}
 	return fmt.Sprintf("%s: %s №%d → №%d", queue, user, p.From, p.To)
+}
+
+// unknownMentionText explains a @username the bot can't match to anyone.
+func unknownMentionText(name string) string {
+	return fmt.Sprintf("Я пока не знаю %s: пусть он(а) хоть раз нажмёт кнопку бота. Или ответьте командой на его сообщение, или укажите его ID.", name)
+}
+
+// removedText is the public line posted after /delete.
+func removedText(queue, user string, from int) string {
+	return fmt.Sprintf("%s: %s убран(а) из очереди, место №%d освободилось", queue, user, from)
 }
 
 func closedText(queue string) string {

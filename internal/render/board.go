@@ -28,43 +28,25 @@ func Name(names map[int64]string, id int64) string {
 //
 //	1. Михаил Петров
 //	2. Иван
-//
-//	<b>Сдали:</b>
-//	- Анна Кузнецова
 func Board(q model.Queue, names map[int64]string) string {
 	var t text
 	t.write("<b>" + html.EscapeString(q.Name) + "</b>")
 	if q.Closed {
 		t.write(" (закрыта)")
 	}
-
-	waiting := q.Waiting()
-	t.write(fmt.Sprintf("\nВ очереди: %d", len(waiting)))
+	t.write(fmt.Sprintf("\nВ очереди: %d", len(q.Entries)))
 
 	if len(q.Entries) == 0 {
 		t.write("\n\nПока никого. Нажмите «+ Записаться».")
+		return t.b.String()
 	}
 
-	if len(waiting) > 0 {
-		lines := make([]string, len(waiting))
-		for i, e := range waiting {
-			lines[i] = fmt.Sprintf("%d. %s", i+1, escapedName(names, e.UserID))
-		}
-		t.write("\n")
-		t.list(lines)
+	lines := make([]string, len(q.Entries))
+	for i, e := range q.Entries {
+		lines[i] = fmt.Sprintf("%d. %s", i+1, escapedName(names, e.UserID))
 	}
-
-	var done []string
-	for _, e := range q.Entries {
-		if e.Done {
-			done = append(done, "- "+escapedName(names, e.UserID))
-		}
-	}
-	if len(done) > 0 {
-		t.write("\n\n<b>Сдали:</b>")
-		t.list(done)
-	}
-
+	t.write("\n")
+	t.list(lines)
 	return t.b.String()
 }
 

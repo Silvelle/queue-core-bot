@@ -76,31 +76,36 @@ func (s *Service) update(
 	return q, nil
 }
 
-// entryIndex returns the index in q.Entries of the user's entry, waiting or
-// done, or -1 if the user isn't in the queue.
-func entryIndex(q *model.Queue, userID int64) int {
+// index returns the index in q.Entries of the user's entry, or -1 if the
+// user isn't in the queue.
+func index(q *model.Queue, userID int64) int {
 	return slices.IndexFunc(q.Entries, func(e model.Entry) bool { return e.UserID == userID })
 }
 
-// waitingIndex is like entryIndex, but only for a user who is still waiting.
-func waitingIndex(q *model.Queue, userID int64) int {
-	if i := entryIndex(q, userID); i >= 0 && !q.Entries[i].Done {
-		return i
+// resolve turns the "who" of a command into a user ID. It's a position if
+// it's within the queue, and a user ID otherwise: positions are small
+// numbers, Telegram user IDs never are. Commands resolve it under the queue
+// lock, so it can't go stale between reading the board and acting.
+func resolve(q *model.Queue, who int64) int64 {
+	if who >= 1 && who <= int64(len(q.Entries)) {
+		return q.Entries[who-1].UserID
 	}
-	return -1
+	return who
 }
 
 func (s *Service) Queue(ctx context.Context, queueID int64) (model.Queue, error) {
 	return s.store.Queue(ctx, queueID)
 }
 
-func (s *Service) OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, error) {
-	return s.store.OpenQueues(ctx, chatID)
+// OpenQueues returns the open queues of a chat's topic; threadID is 0 for a
+// group without topics.
+func (s *Service) OpenQueues(ctx context.Context, chatID int64, threadID int) ([]model.Queue, error) {
+	return s.store.OpenQueues(ctx, chatID, threadID)
 }
 
-// Create opens a new queue in the chat. Names are trimmed and must be unique
-// among the chat's open queues, ignoring case.
-func (s *Service) Create(ctx context.Context, chatID int64, name string, createdBy int64) (model.Queue, error) {
+// Create opens a new queue in a chat's topic. Names are trimmed and must be
+// unique among the topic's open queues, ignoring case.
+func (s *Service) Create(ctx context.Context, chatID int64, threadID int, name string, createdBy int64) (model.Queue, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > maxNameLen {
 		return model.Queue{}, model.ErrInvalidName
@@ -109,7 +114,7 @@ func (s *Service) Create(ctx context.Context, chatID int64, name string, created
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
 
-	open, err := s.store.OpenQueues(ctx, chatID)
+	open, err := s.store.OpenQueues(ctx, chatID, threadID)
 	if err != nil {
 		return model.Queue{}, err
 	}
@@ -121,6 +126,7 @@ func (s *Service) Create(ctx context.Context, chatID int64, name string, created
 
 	return s.store.CreateQueue(ctx, model.Queue{
 		ChatID:    chatID,
+		ThreadID:  threadID,
 		Name:      name,
 		CreatedBy: createdBy,
 		CreatedAt: s.now(),
@@ -140,10 +146,7 @@ func (s *Service) SetBoardMessage(ctx context.Context, queueID int64, msgID int)
 // Join adds the user to the end of the queue and returns their position.
 func (s *Service) Join(ctx context.Context, queueID, userID int64) (int, error) {
 	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		if i := entryIndex(q, userID); i >= 0 {
-			if q.Entries[i].Done {
-				return model.ErrAlreadyDone
-			}
+		if index(q, userID) >= 0 {
 			return model.ErrAlreadyJoined
 		}
 		q.Entries = append(q.Entries, model.Entry{UserID: userID, JoinedAt: s.now()})
@@ -155,10 +158,11 @@ func (s *Service) Join(ctx context.Context, queueID, userID int64) (int, error) 
 	return q.Position(userID), nil
 }
 
-// Leave removes a waiting user from the queue. They can join again later.
+// Leave removes the user from the queue, for example after their defense.
+// They can join again later.
 func (s *Service) Leave(ctx context.Context, queueID, userID int64) error {
 	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		i := waitingIndex(q, userID)
+		i := index(q, userID)
 		if i < 0 {
 			return model.ErrNotInQueue
 		}
@@ -168,10 +172,10 @@ func (s *Service) Leave(ctx context.Context, queueID, userID int64) error {
 	return err
 }
 
-// ToEnd moves a waiting user behind everyone else and returns their new position.
+// ToEnd moves the user behind everyone else and returns their new position.
 func (s *Service) ToEnd(ctx context.Context, queueID, userID int64) (int, error) {
 	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		i := waitingIndex(q, userID)
+		i := index(q, userID)
 		if i < 0 {
 			return model.ErrNotInQueue
 		}
@@ -185,179 +189,160 @@ func (s *Service) ToEnd(ctx context.Context, queueID, userID int64) (int, error)
 	return q.Position(userID), nil
 }
 
-// Done marks the user as defended. Only the user can mark themselves.
-func (s *Service) Done(ctx context.Context, queueID, userID int64) error {
-	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		i := waitingIndex(q, userID)
-		if i < 0 {
-			return model.ErrNotInQueue
-		}
-		q.Entries[i].Done = true
-		q.Entries[i].DoneAt = s.now()
-		return nil
-	})
-	return err
-}
-
-// Undo takes back the user's Done. They return to the place they had,
-// because a done entry never leaves its spot in the queue.
-func (s *Service) Undo(ctx context.Context, queueID, userID int64) (int, error) {
-	q, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		i := entryIndex(q, userID)
-		if i < 0 {
-			return model.ErrNotInQueue
-		}
-		if !q.Entries[i].Done {
-			return model.ErrNotDone
-		}
-		q.Entries[i].Done = false
-		q.Entries[i].DoneAt = time.Time{}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return q.Position(userID), nil
-}
-
 // Swapped describes a finished swap, for the public "who swapped with whom"
-// line. Positions are 1-based and taken before the swap.
+// line. Positions are 1-based and taken before the swap: UserID was at
+// From, TargetID at To.
 type Swapped struct {
+	UserID   int64
 	TargetID int64
 	From     int
 	To       int
 }
 
-// SwapWith swaps the user with another waiting user. It's meant for a swap
-// picker, which knows who was picked rather than their position.
-func (s *Service) SwapWith(ctx context.Context, queueID, userID, targetID int64) (Swapped, error) {
-	var res Swapped
-	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		var err error
-		res, err = swap(q, userID, targetID)
-		return err
-	})
-	return res, err
-}
-
-// SwapWithPosition swaps the user with whoever is at pos. The /swap command
-// uses it.
+// SwapWithPosition swaps the user with whoever is at pos: /swap <pos>.
 func (s *Service) SwapWithPosition(ctx context.Context, queueID, userID int64, pos int) (Swapped, error) {
 	var res Swapped
 	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		waiting := q.Waiting()
-		if pos < 1 || pos > len(waiting) {
+		if pos < 1 || pos > len(q.Entries) {
 			return model.ErrInvalidPosition
 		}
 		var err error
-		res, err = swap(q, userID, waiting[pos-1].UserID)
+		res, err = swap(q, userID, q.Entries[pos-1].UserID)
 		return err
 	})
 	return res, err
 }
 
-// Placed describes a finished /place, for the public line. To is the new
-// position; From is the old one, or 0 if the person was inserted.
+// Swap swaps two other people: /swap <who> <who>, where each who is a
+// position or a user ID, see resolve.
+func (s *Service) Swap(ctx context.Context, queueID, a, b int64) (Swapped, error) {
+	var res Swapped
+	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		var err error
+		res, err = swap(q, resolve(q, a), resolve(q, b))
+		// Both are other people here, so "you're not in the queue" would
+		// be the wrong message.
+		if errors.Is(err, model.ErrNotInQueue) {
+			return model.ErrTargetNotInQueue
+		}
+		return err
+	})
+	return res, err
+}
+
+func swap(q *model.Queue, userID, targetID int64) (Swapped, error) {
+	if userID == targetID {
+		return Swapped{}, model.ErrSelfSwap
+	}
+	i := index(q, userID)
+	if i < 0 {
+		return Swapped{}, model.ErrNotInQueue
+	}
+	j := index(q, targetID)
+	if j < 0 {
+		return Swapped{}, model.ErrTargetNotInQueue
+	}
+
+	q.Entries[i], q.Entries[j] = q.Entries[j], q.Entries[i]
+	return Swapped{UserID: userID, TargetID: targetID, From: i + 1, To: j + 1}, nil
+}
+
+// Removed describes a finished /delete, for the public line.
+type Removed struct {
+	UserID int64
+	From   int
+}
+
+// Remove takes a person out of the queue: /delete <who>, where who is a
+// position or a user ID, see resolve. Everyone after them moves up.
+func (s *Service) Remove(ctx context.Context, queueID, who int64) (Removed, error) {
+	var res Removed
+	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		userID := resolve(q, who)
+		i := index(q, userID)
+		if i < 0 {
+			return model.ErrTargetNotInQueue
+		}
+		q.Entries = slices.Delete(q.Entries, i, i+1)
+		res = Removed{UserID: userID, From: i + 1}
+		return nil
+	})
+	return res, err
+}
+
+// Placed describes a finished /place or /add, for the public line. To is
+// the new position; From is the old one, or 0 if the person was added.
 type Placed struct {
 	UserID int64
 	From   int
 	To     int
 }
 
-// Inserted reports whether the person wasn't in the queue before.
-func (p Placed) Inserted() bool { return p.From == 0 }
+// Added reports whether the person wasn't in the queue before.
+func (p Placed) Added() bool { return p.From == 0 }
 
-// Place puts a person at position to, for fixing a wrong press. Everyone
-// from that position on moves down by one, so unlike a swap nobody is sent
-// backwards.
-//
-// who is the person's current position if it's within the queue, and
-// their user ID otherwise: positions are small numbers, Telegram user IDs
-// never are. A waiting person is moved. Someone not in the queue, like
-// after "Выйти" by mistake, is inserted, which also allows the place right
-// after the last one; they must be someone the bot has seen, so a mistyped
-// ID can't add a stranger. Someone done is refused: only they can undo it.
-// Everything is resolved under the queue lock, so nothing can go stale
-// between reading the board and placing.
+// AtEnd as the position for Place or Add means "at the end of the queue".
+const AtEnd = 0
+
+// Place moves someone in the queue to position to: /place <who> [position],
+// where who is a position or a user ID, see resolve. Everyone in between
+// shifts by one, so unlike a swap nobody is sent backwards. With to set to
+// AtEnd, the person goes last. Adding someone new is Add.
 func (s *Service) Place(ctx context.Context, queueID, who int64, to int) (Placed, error) {
 	var res Placed
 	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
-		waiting := q.Waiting()
-		userID := who
-		if who >= 1 && who <= int64(len(waiting)) {
-			userID = waiting[who-1].UserID
+		userID := resolve(q, who)
+		i := index(q, userID)
+		if i < 0 {
+			return model.ErrTargetNotInQueue
+		}
+		if to == AtEnd {
+			to = len(q.Entries)
+		}
+		if to < 1 || to > len(q.Entries) {
+			return model.ErrInvalidPosition
+		}
+		if i+1 == to {
+			return model.ErrAlreadyThere
 		}
 
-		var (
-			e    model.Entry
-			from int // stays 0 for an insert
-		)
-		switch i := entryIndex(q, userID); {
-		case i >= 0 && q.Entries[i].Done:
-			return model.ErrTargetDone
-		case i >= 0:
-			if to < 1 || to > len(waiting) {
-				return model.ErrInvalidPosition
-			}
-			from = q.Position(userID)
-			if from == to {
-				return model.ErrAlreadyThere
-			}
-			e = q.Entries[i]
-			q.Entries = slices.Delete(q.Entries, i, i+1)
-		default:
-			if to < 1 || to > len(waiting)+1 {
-				return model.ErrInvalidPosition
-			}
-			if _, err := s.store.User(ctx, userID); errors.Is(err, model.ErrNotFound) {
-				return model.ErrUnknownUser
-			} else if err != nil {
-				return err
-			}
-			e = model.Entry{UserID: userID, JoinedAt: s.now()}
-		}
-
-		q.Entries = slices.Insert(q.Entries, waitingSlot(q, to), e)
-		res = Placed{UserID: userID, From: from, To: to}
+		e := q.Entries[i]
+		q.Entries = slices.Insert(slices.Delete(q.Entries, i, i+1), to-1, e)
+		res = Placed{UserID: userID, From: i + 1, To: to}
 		return nil
 	})
 	return res, err
 }
 
-// waitingSlot returns the index in q.Entries where an entry must go to
-// become waiting position pos: right before whoever is at pos now, or at
-// the end. Done entries keep their places.
-func waitingSlot(q *model.Queue, pos int) int {
-	n := 0
-	for i, e := range q.Entries {
-		if e.Done {
-			continue
+// Add puts someone who isn't in the queue at position to, for example after
+// "Выйти" by mistake, or for someone who can't press the button: /add <who>
+// [position]. Everyone from that position on moves down by one; with to set
+// to AtEnd, the person goes last. They must be someone the bot knows, so a
+// mistyped ID can't add a stranger; the handler makes chat members known by
+// asking Telegram.
+func (s *Service) Add(ctx context.Context, queueID, userID int64, to int) (Placed, error) {
+	var res Placed
+	_, err := s.update(ctx, queueID, func(q *model.Queue) error {
+		if index(q, userID) >= 0 {
+			return model.ErrTargetInQueue
 		}
-		n++
-		if n == pos {
-			return i
+		if to == AtEnd {
+			to = len(q.Entries) + 1
 		}
-	}
-	return len(q.Entries)
-}
+		if to < 1 || to > len(q.Entries)+1 {
+			return model.ErrInvalidPosition
+		}
+		if _, err := s.store.User(ctx, userID); errors.Is(err, model.ErrNotFound) {
+			return model.ErrUnknownUser
+		} else if err != nil {
+			return err
+		}
 
-func swap(q *model.Queue, userID int64, targetID int64) (Swapped, error) {
-	if userID == targetID {
-		return Swapped{}, model.ErrSelfSwap
-	}
-	i := waitingIndex(q, userID)
-	if i < 0 {
-		return Swapped{}, model.ErrNotInQueue
-	}
-	j := waitingIndex(q, targetID)
-	if j < 0 {
-		return Swapped{}, model.ErrTargetNotInQueue
-	}
-
-	res := Swapped{TargetID: targetID, From: q.Position(userID), To: q.Position(targetID)}
-
-	q.Entries[i], q.Entries[j] = q.Entries[j], q.Entries[i]
-	return res, nil
+		q.Entries = slices.Insert(q.Entries, to-1, model.Entry{UserID: userID, JoinedAt: s.now()})
+		res = Placed{UserID: userID, To: to}
+		return nil
+	})
+	return res, err
 }
 
 // Close freezes the queue. Closing twice returns model.ErrQueueClosed.
@@ -367,6 +352,12 @@ func (s *Service) Close(ctx context.Context, queueID int64) error {
 		return nil
 	})
 	return err
+}
+
+// UserByUsername finds a known user by their Telegram username, without
+// the "@".
+func (s *Service) UserByUsername(ctx context.Context, username string) (model.User, error) {
+	return s.store.UserByUsername(ctx, username)
 }
 
 // SaveUser stores the user's current names. Handlers call it on every
