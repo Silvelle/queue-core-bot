@@ -2,14 +2,17 @@ package model
 
 import "time"
 
-// Queue is a defense queue that belongs to one group chat.
+// Queue is a defense queue that belongs to one group chat, and to one topic
+// of it if the group has topics.
 //
-// Entries are kept in order: the waiting entries, in the order they appear,
-// define positions 1..n. Done entries keep their place in the slice but are
-// skipped when counting positions.
+// Entries are the people waiting, in order: their index plus one is their
+// position.
 type Queue struct {
-	ID         int64
-	ChatID     int64
+	ID     int64
+	ChatID int64
+	// ThreadID is the forum topic the queue lives in, or 0 for a group
+	// without topics. Each topic has its own queues.
+	ThreadID   int
 	Name       string
 	BoardMsgID int
 	CreatedBy  int64
@@ -22,43 +25,15 @@ type Queue struct {
 type Entry struct {
 	UserID   int64
 	JoinedAt time.Time
-	Done     bool
-	DoneAt   time.Time
 }
 
-// Waiting returns the entries that have not defended yet, in queue order.
-func (q *Queue) Waiting() []Entry {
-	var out []Entry
-	for _, e := range q.Entries {
-		if !e.Done {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-// Position returns the 1-based position of a waiting user,
-// or 0 if the user is not waiting in this queue.
+// Position returns the 1-based position of a user, or 0 if the user is not
+// in this queue.
 func (q *Queue) Position(userID int64) int {
-	pos := 0
-	for _, e := range q.Entries {
-		if e.Done {
-			continue
-		}
-		pos++
+	for i, e := range q.Entries {
 		if e.UserID == userID {
-			return pos
+			return i + 1
 		}
 	}
 	return 0
-}
-
-// Has reports whether the user is in the queue, waiting or done.
-func (q *Queue) Has(userID int64) bool {
-	for _, e := range q.Entries {
-		if e.UserID == userID {
-			return true
-		}
-	}
-	return false
 }

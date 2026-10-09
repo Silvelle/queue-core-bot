@@ -22,6 +22,7 @@ func Run(t *testing.T, newStore func(t *testing.T) storage.Storage) {
 	}{
 		{"Users", testUsers},
 		{"UserNotFound", testUserNotFound},
+		{"UserByUsername", testUserByUsername},
 		{"QueueLifecycle", testQueueLifecycle},
 		{"QueueNotFound", testQueueNotFound},
 		{"QueueRoundTrip", testQueueRoundTrip},
@@ -60,6 +61,30 @@ func testUsers(t *testing.T, s storage.Storage) {
 func testUserNotFound(t *testing.T, s storage.Storage) {
 	if _, err := s.User(context.Background(), 1); !errors.Is(err, model.ErrNotFound) {
 		t.Errorf("User(unknown) error = %v, want ErrNotFound", err)
+	}
+}
+
+func testUserByUsername(t *testing.T, s storage.Storage) {
+	ctx := context.Background()
+	for _, u := range []model.User{
+		{ID: 1, FirstName: "Anna", Username: "anna_k"},
+		{ID: 2, FirstName: "Ivan"}, // no username
+	} {
+		if err := s.SaveUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, name := range []string{"anna_k", "Anna_K", "ANNA_K"} {
+		u, err := s.UserByUsername(ctx, name)
+		if err != nil || u.ID != 1 {
+			t.Errorf("UserByUsername(%q) = %+v, %v, want Anna", name, u, err)
+		}
+	}
+	for _, name := range []string{"ivan", "", "nobody"} {
+		if _, err := s.UserByUsername(ctx, name); !errors.Is(err, model.ErrNotFound) {
+			t.Errorf("UserByUsername(%q) error = %v, want ErrNotFound", name, err)
+		}
 	}
 }
 
@@ -105,17 +130,17 @@ func testQueueRoundTrip(t *testing.T, s storage.Storage) {
 	ctx := context.Background()
 	created := time.Date(2026, 9, 28, 10, 0, 0, 123456789, time.UTC)
 	joined := created.Add(time.Minute)
-	done := created.Add(time.Hour)
 
 	want := model.Queue{
 		ChatID:     -100123,
+		ThreadID:   42,
 		Name:       "Практика 4",
 		BoardMsgID: 555,
 		CreatedBy:  7,
 		CreatedAt:  created,
 		Closed:     true,
 		Entries: []model.Entry{
-			{UserID: 3, JoinedAt: joined, Done: true, DoneAt: done},
+			{UserID: 3, JoinedAt: joined},
 			{UserID: 1, JoinedAt: joined},
 			{UserID: 2},
 		},
@@ -172,25 +197,35 @@ func testOpenQueues(t *testing.T, s storage.Storage) {
 	a := mustCreate(model.Queue{ChatID: 10, Name: "A", Entries: []model.Entry{{UserID: 1}}})
 	mustCreate(model.Queue{ChatID: 20, Name: "other chat"})
 	mustCreate(model.Queue{ChatID: 10, Name: "closed", Closed: true})
+	mustCreate(model.Queue{ChatID: 10, ThreadID: 5, Name: "other topic"})
 	b := mustCreate(model.Queue{ChatID: 10, Name: "B"})
+	topic := mustCreate(model.Queue{ChatID: 10, ThreadID: 7, Name: "in topic 7"})
 
-	got, err := s.OpenQueues(ctx, 10)
+	got, err := s.OpenQueues(ctx, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0].ID != a.ID || got[1].ID != b.ID {
-		t.Fatalf("OpenQueues(10) = %+v, want A then B", got)
+		t.Fatalf("OpenQueues(10, 0) = %+v, want A then B", got)
 	}
 	if len(got[0].Entries) != 1 {
 		t.Errorf("OpenQueues should load entries, got %+v", got[0].Entries)
 	}
 
-	none, err := s.OpenQueues(ctx, 30)
+	inTopic, err := s.OpenQueues(ctx, 10, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inTopic) != 1 || inTopic[0].ID != topic.ID {
+		t.Errorf("OpenQueues(10, 7) = %+v, want only the queue of topic 7", inTopic)
+	}
+
+	none, err := s.OpenQueues(ctx, 30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(none) != 0 {
-		t.Errorf("OpenQueues(30) = %+v, want none", none)
+		t.Errorf("OpenQueues(30, 0) = %+v, want none", none)
 	}
 }
 
@@ -256,7 +291,7 @@ func testConcurrentCreate(t *testing.T, s storage.Storage) {
 func assertQueue(t *testing.T, got, want model.Queue) {
 	t.Helper()
 
-	if got.ID != want.ID || got.ChatID != want.ChatID || got.Name != want.Name ||
+	if got.ID != want.ID || got.ChatID != want.ChatID || got.ThreadID != want.ThreadID || got.Name != want.Name ||
 		got.BoardMsgID != want.BoardMsgID || got.CreatedBy != want.CreatedBy ||
 		got.Closed != want.Closed || !got.CreatedAt.Equal(want.CreatedAt) {
 		t.Errorf("queue = %+v, want %+v", got, want)
@@ -267,8 +302,7 @@ func assertQueue(t *testing.T, got, want model.Queue) {
 	}
 	for i, g := range got.Entries {
 		w := want.Entries[i]
-		if g.UserID != w.UserID || g.Done != w.Done ||
-			!g.JoinedAt.Equal(w.JoinedAt) || !g.DoneAt.Equal(w.DoneAt) {
+		if g.UserID != w.UserID || !g.JoinedAt.Equal(w.JoinedAt) {
 			t.Errorf("entry %d = %+v, want %+v", i, g, w)
 		}
 	}

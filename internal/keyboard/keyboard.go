@@ -13,7 +13,6 @@ import (
 //
 //	[ + Записаться ]  [ Выйти ]
 //	[ В конец ]       [ Где я? ]
-//	[ ✓ Сдано ]       [ ↩ Сброс ]
 //	[     📋 Все очереди      ]
 func Board(queueID int64) *models.InlineKeyboardMarkup {
 	b := func(text string, a callbacks.Action) models.InlineKeyboardButton {
@@ -24,7 +23,6 @@ func Board(queueID int64) *models.InlineKeyboardMarkup {
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{b("+ Записаться", callbacks.Join), b("Выйти", callbacks.Leave)},
 			{b("В конец", callbacks.ToEnd), b("Где я?", callbacks.Where)},
-			{b("✓ Сдано", callbacks.Done), b("↩ Сброс", callbacks.Undo)},
 			{b("📋 Все очереди", callbacks.All)},
 		},
 	}

@@ -22,7 +22,7 @@ import (
 var _ storage.Storage = (*Storage)(nil)
 
 // queueColumns is the column list scanQueue expects, in its order.
-const queueColumns = `id, chat_id, name, board_msg_id, created_by, created_at, closed`
+const queueColumns = `id, chat_id, thread_id, name, board_msg_id, created_by, created_at, closed`
 
 type Storage struct {
 	db *sql.DB
@@ -87,12 +87,28 @@ func (s *Storage) User(ctx context.Context, id int64) (model.User, error) {
 	return u, nil
 }
 
+func (s *Storage) UserByUsername(ctx context.Context, username string) (model.User, error) {
+	var u model.User
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, first_name, last_name, username FROM users
+		WHERE username != '' AND username = ? COLLATE NOCASE
+		LIMIT 1`, username).
+		Scan(&u.ID, &u.FirstName, &u.LastName, &u.Username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.User{}, model.ErrNotFound
+	}
+	if err != nil {
+		return model.User{}, fmt.Errorf("find user @%s: %w", username, err)
+	}
+	return u, nil
+}
+
 func (s *Storage) CreateQueue(ctx context.Context, q model.Queue) (model.Queue, error) {
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO queues (chat_id, name, board_msg_id, created_by, created_at, closed)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			q.ChatID, q.Name, q.BoardMsgID, q.CreatedBy, toUnix(q.CreatedAt), q.Closed)
+			INSERT INTO queues (chat_id, thread_id, name, board_msg_id, created_by, created_at, closed)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			q.ChatID, q.ThreadID, q.Name, q.BoardMsgID, q.CreatedBy, toUnix(q.CreatedAt), q.Closed)
 		if err != nil {
 			return err
 		}
@@ -129,9 +145,9 @@ func (s *Storage) UpdateQueue(ctx context.Context, q model.Queue) error {
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE queues
-			SET chat_id = ?, name = ?, board_msg_id = ?, created_by = ?, created_at = ?, closed = ?
+			SET chat_id = ?, thread_id = ?, name = ?, board_msg_id = ?, created_by = ?, created_at = ?, closed = ?
 			WHERE id = ?`,
-			q.ChatID, q.Name, q.BoardMsgID, q.CreatedBy, toUnix(q.CreatedAt), q.Closed, q.ID)
+			q.ChatID, q.ThreadID, q.Name, q.BoardMsgID, q.CreatedBy, toUnix(q.CreatedAt), q.Closed, q.ID)
 		if err != nil {
 			return err
 		}
@@ -157,9 +173,10 @@ func (s *Storage) UpdateQueue(ctx context.Context, q model.Queue) error {
 	return nil
 }
 
-func (s *Storage) OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, error) {
+func (s *Storage) OpenQueues(ctx context.Context, chatID int64, threadID int) ([]model.Queue, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+queueColumns+` FROM queues WHERE chat_id = ? AND NOT closed ORDER BY id`, chatID)
+		`SELECT `+queueColumns+` FROM queues WHERE chat_id = ? AND thread_id = ? AND NOT closed ORDER BY id`,
+		chatID, threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list open queues of chat %d: %w", chatID, err)
 	}
@@ -193,7 +210,7 @@ func (s *Storage) OpenQueues(ctx context.Context, chatID int64) ([]model.Queue, 
 // entries loads a queue's entries in their order.
 func (s *Storage) entries(ctx context.Context, queueID int64) ([]model.Entry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT user_id, joined_at, done, done_at
+		SELECT user_id, joined_at
 		FROM entries WHERE queue_id = ?
 		ORDER BY pos`, queueID)
 	if err != nil {
@@ -204,13 +221,13 @@ func (s *Storage) entries(ctx context.Context, queueID int64) ([]model.Entry, er
 	var out []model.Entry
 	for rows.Next() {
 		var (
-			e              model.Entry
-			joined, doneAt int64
+			e      model.Entry
+			joined int64
 		)
-		if err := rows.Scan(&e.UserID, &joined, &e.Done, &doneAt); err != nil {
+		if err := rows.Scan(&e.UserID, &joined); err != nil {
 			return nil, err
 		}
-		e.JoinedAt, e.DoneAt = fromUnix(joined), fromUnix(doneAt)
+		e.JoinedAt = fromUnix(joined)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -221,9 +238,9 @@ func (s *Storage) entries(ctx context.Context, queueID int64) ([]model.Entry, er
 func insertEntries(ctx context.Context, tx *sql.Tx, queueID int64, entries []model.Entry) error {
 	for pos, e := range entries {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO entries (queue_id, pos, user_id, joined_at, done, done_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			queueID, pos, e.UserID, toUnix(e.JoinedAt), e.Done, toUnix(e.DoneAt))
+			INSERT INTO entries (queue_id, pos, user_id, joined_at)
+			VALUES (?, ?, ?, ?)`,
+			queueID, pos, e.UserID, toUnix(e.JoinedAt))
 		if err != nil {
 			return err
 		}
@@ -256,7 +273,7 @@ func scanQueue(row scanner) (model.Queue, error) {
 		q       model.Queue
 		created int64
 	)
-	err := row.Scan(&q.ID, &q.ChatID, &q.Name, &q.BoardMsgID, &q.CreatedBy, &created, &q.Closed)
+	err := row.Scan(&q.ID, &q.ChatID, &q.ThreadID, &q.Name, &q.BoardMsgID, &q.CreatedBy, &created, &q.Closed)
 	q.CreatedAt = fromUnix(created)
 	return q, err
 }

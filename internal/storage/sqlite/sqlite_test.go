@@ -151,7 +151,7 @@ func TestServiceConcurrentJoin(t *testing.T) {
 	ctx := context.Background()
 	svc := service.New(open(t, filepath.Join(t.TempDir(), "queue.db")))
 
-	q, err := svc.Create(ctx, 10, "Practice 4", 1)
+	q, err := svc.Create(ctx, 10, 0, "Practice 4", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,11 +171,10 @@ func TestServiceConcurrentJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waiting := got.Waiting()
-	if len(waiting) != n {
-		t.Fatalf("%d waiting, want %d", len(waiting), n)
+	if len(got.Entries) != n {
+		t.Fatalf("%d in the queue, want %d", len(got.Entries), n)
 	}
-	for i, e := range waiting {
+	for i, e := range got.Entries {
 		if pos := got.Position(e.UserID); pos != i+1 {
 			t.Fatalf("user %d at position %d, want %d", e.UserID, pos, i+1)
 		}
@@ -202,7 +201,7 @@ func TestUpgradeFromVersion1(t *testing.T) {
 	_ = db.Close()
 
 	s := open(t, path)
-	queues, err := s.OpenQueues(ctx, 10)
+	queues, err := s.OpenQueues(ctx, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,5 +214,40 @@ func TestUpgradeFromVersion1(t *testing.T) {
 	}
 	if version != len(migrations) {
 		t.Errorf("after upgrade: schema version = %d, want %d", version, len(migrations))
+	}
+}
+
+// A version 2 database, like the one on the server before topics, gets the
+// topic column and loses the entries of people who had defended: they were
+// already off the board, and "done" no longer exists.
+func TestUpgradeFromVersion2(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "queue.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(migrations[0] + migrations[1] + `PRAGMA user_version = 2;`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO queues (id, chat_id, name, created_by, created_at) VALUES (1, 10, 'Practice 4', 1, 0);
+		INSERT INTO entries (queue_id, pos, user_id, done) VALUES (1, 0, 100, TRUE), (1, 1, 200, FALSE), (1, 2, 300, FALSE);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	s := open(t, path)
+	q, err := s.Queue(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.ThreadID != 0 {
+		t.Errorf("old queue got topic %d, want 0", q.ThreadID)
+	}
+	if len(q.Entries) != 2 || q.Entries[0].UserID != 200 || q.Entries[1].UserID != 300 {
+		t.Errorf("after upgrade: entries = %+v, want 200 then 300", q.Entries)
 	}
 }

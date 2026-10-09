@@ -11,8 +11,6 @@ var wantText = map[callbacks.Action]string{
 	callbacks.Join:  "+ Записаться",
 	callbacks.Leave: "Выйти",
 	callbacks.ToEnd: "В конец",
-	callbacks.Done:  "✓ Сдано",
-	callbacks.Undo:  "↩ Сброс",
 	callbacks.Where: "Где я?",
 	callbacks.All:   "📋 Все очереди",
 }
@@ -21,7 +19,6 @@ func TestBoardLayout(t *testing.T) {
 	want := [][]string{
 		{"+ Записаться", "Выйти"},
 		{"В конец", "Где я?"},
-		{"✓ Сдано", "↩ Сброс"},
 		{"📋 Все очереди"},
 	}
 

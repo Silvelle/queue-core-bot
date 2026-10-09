@@ -15,18 +15,18 @@ import (
 // postIndex posts the chat's list of queues. It's only posted when someone
 // asks for it, with /queues or "Все очереди", and it's never pinned. Earlier
 // lists stay as they are, buttons included.
-func (h *Handler) postIndex(ctx context.Context, chatID int64) error {
-	open, err := h.svc.OpenQueues(ctx, chatID)
+func (h *Handler) postIndex(ctx context.Context, chatID int64, threadID int) error {
+	open, err := h.svc.OpenQueues(ctx, chatID, threadID)
 	if err != nil {
 		return err
 	}
-	_, err = h.send(ctx, chatID, render.Index(open), keyboard.Index(open))
+	_, err = h.send(ctx, chatID, threadID, render.Index(open), keyboard.Index(open))
 	return err
 }
 
 // queues handles /queues: it posts the list of queues.
 func (h *Handler) queues(ctx context.Context, msg *models.Message, _ string) {
-	if err := h.postIndex(ctx, msg.Chat.ID); err != nil {
+	if err := h.postIndex(ctx, msg.Chat.ID, topicOf(msg)); err != nil {
 		h.replyError(ctx, msg, "post list of queues", err)
 	}
 }
@@ -64,7 +64,7 @@ func (h *Handler) repostBoard(ctx context.Context, queueID int64) error {
 		return err
 	}
 
-	sent, err := h.send(ctx, q.ChatID, text, keyboard.Board(q.ID))
+	sent, err := h.send(ctx, q.ChatID, q.ThreadID, text, keyboard.Board(q.ID))
 	if err != nil {
 		return err
 	}
@@ -74,8 +74,13 @@ func (h *Handler) repostBoard(ctx context.Context, queueID int64) error {
 // send posts a board or a list of queues: HTML text with buttons, see
 // render. An empty keyboard is left out: Telegram accepts it on an edit,
 // where it removes the buttons, but a new message simply has none.
-func (h *Handler) send(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
-	params := &bot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML}
+func (h *Handler) send(ctx context.Context, chatID int64, threadID int, text string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
+	params := &bot.SendMessageParams{
+		ChatID:          chatID,
+		MessageThreadID: threadID,
+		Text:            text,
+		ParseMode:       models.ParseModeHTML,
+	}
 	if markup != nil && len(markup.InlineKeyboard) > 0 {
 		params.ReplyMarkup = markup
 	}

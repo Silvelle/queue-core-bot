@@ -90,7 +90,7 @@ func TestRedrawIsImmediate(t *testing.T) {
 	}
 }
 
-// Presses one after another, like Сдано then Сброс, each get their own
+// Presses one after another, like Записаться then Выйти, each get their own
 // redraw right away.
 func TestRedrawEveryPress(t *testing.T) {
 	d := newFakeDraw()

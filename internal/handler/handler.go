@@ -39,26 +39,36 @@ func (h *Handler) Register(ctx context.Context) {
 	h.command("help", h.help)
 	h.groupCommand("new", h.newQueue)
 	h.groupCommand("swap", h.swap)
+	h.groupCommand("add", h.add)
 	h.groupCommand("place", h.place)
+	h.groupCommand("delete", h.remove)
 	h.groupCommand("close", h.closeQueue)
 	h.groupCommand("queues", h.queues)
 	h.groupCommand("show", h.show)
 	h.b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "b:", bot.MatchTypePrefix, h.boardPress)
 
 	_, err := h.b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
-		Commands: []models.BotCommand{
-			{Command: "new", Description: "Создать очередь"},
-			{Command: "swap", Description: "Поменяться местами"},
-			{Command: "place", Description: "Поставить человека на место"},
-			{Command: "close", Description: "Закрыть очередь"},
-			{Command: "queues", Description: "Список открытых очередей"},
-			{Command: "show", Description: "Показать доску очереди внизу чата"},
-			{Command: "help", Description: "Как пользоваться ботом"},
-		},
+		Commands: menuCommands,
 	})
 	if err != nil {
 		log.Printf("set bot commands: %v", err)
 	}
+}
+
+// menuCommands is the list Telegram shows when someone types "/". It has
+// one line of description per command and nothing else, so each line says
+// in plain words what to type after the command, most important part
+// first: phones cut long lines off.
+var menuCommands = []models.BotCommand{
+	{Command: "new", Description: "Создать очередь. Напишите название: /new Практика 4"},
+	{Command: "add", Description: "Добавить человека: @имя или ID, затем место (без места — в конец). /add @username 3"},
+	{Command: "place", Description: "Переставить человека: номер, @имя или ID, затем место (без места — в конец). /place 7 3"},
+	{Command: "swap", Description: "Поменяться местами: /swap 5 — вы и №5, /swap 1 3 — №1 и №3"},
+	{Command: "delete", Description: "Убрать человека из очереди: номер, @имя или ID. /delete 4"},
+	{Command: "close", Description: "Закрыть очередь. Напишите название: /close Практика 4"},
+	{Command: "queues", Description: "Список открытых очередей"},
+	{Command: "show", Description: "Показать доску очереди внизу чата: /show Практика 4"},
+	{Command: "help", Description: "Как пользоваться ботом"},
 }
 
 // command registers f for /name, with or without @botUsername.
@@ -106,7 +116,7 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 		return
 	}
 
-	q, err := h.svc.Create(ctx, msg.Chat.ID, name, msg.From.ID)
+	q, err := h.svc.Create(ctx, msg.Chat.ID, topicOf(msg), name, msg.From.ID)
 	if err != nil {
 		h.replyError(ctx, msg, "create queue", err)
 		return
@@ -117,7 +127,7 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 		h.replyError(ctx, msg, "draw new board", err)
 		return
 	}
-	board, err := h.send(ctx, q.ChatID, text, keyboard.Board(q.ID))
+	board, err := h.send(ctx, q.ChatID, q.ThreadID, text, keyboard.Board(q.ID))
 	if err != nil {
 		log.Printf("post board of queue %d: %v", q.ID, err)
 		return
@@ -127,11 +137,17 @@ func (h *Handler) newQueue(ctx context.Context, msg *models.Message, name string
 	}
 }
 
-// swap handles /swap <position>. It swaps the sender with whoever is at
-// that position and posts a public line, so the change is visible to all.
-func (h *Handler) swap(ctx context.Context, msg *models.Message, args string) {
-	pos, err := strconv.Atoi(args)
-	if err != nil {
+// swap handles /swap <pos>, which swaps the sender with whoever is at that
+// position, and /swap <who> <who>, which swaps two other people, each given
+// by position or user ID. Swapping others is allowed, so every swap is
+// announced in the chat.
+func (h *Handler) swap(ctx context.Context, msg *models.Message, _ string) {
+	args, ok := h.mentionArgs(ctx, msg)
+	if !ok {
+		return
+	}
+	nums, ok := parseNumbers(args)
+	if !ok || len(nums) < 1 || len(nums) > 2 {
 		h.reply(ctx, msg, swapUsageText)
 		return
 	}
@@ -141,28 +157,74 @@ func (h *Handler) swap(ctx context.Context, msg *models.Message, args string) {
 		return
 	}
 
-	res, err := h.svc.SwapWithPosition(ctx, q.ID, msg.From.ID, pos)
+	var (
+		res service.Swapped
+		err error
+	)
+	if len(nums) == 1 {
+		res, err = h.svc.SwapWithPosition(ctx, q.ID, msg.From.ID, int(nums[0]))
+	} else {
+		res, err = h.svc.Swap(ctx, q.ID, nums[0], nums[1])
+	}
 	if err != nil {
 		h.replyError(ctx, msg, "swap", err)
 		return
 	}
 	h.redraw.Schedule(q.ID)
 
-	names, err := h.svc.Names(ctx, q)
-	if err != nil {
-		log.Printf("names for swap line in queue %d: %v", q.ID, err)
-	}
-	h.reply(ctx, msg, swappedText(q.Name, render.Name(names, msg.From.ID), render.Name(names, res.TargetID), res.From, res.To))
+	names := h.namesFor(ctx, q.ID)
+	h.reply(ctx, msg, swappedText(q.Name, render.Name(names, res.UserID), render.Name(names, res.TargetID), res.From, res.To))
 }
 
-// place handles /place <who> <position>, for fixing a wrong press: it moves
-// a waiting person to that position, or puts back someone who left by
-// mistake. who is the person's current number, or their user ID. Placing
-// someone else is allowed, like /swap, so it's always announced in the chat.
-func (h *Handler) place(ctx context.Context, msg *models.Message, args string) {
-	who, to, ok := parsePlaceArgs(args)
+// remove handles /delete <who>: it takes a person, given by position or
+// user ID, out of the queue, for example after their defense. Anyone can
+// do it, so it's announced in the chat.
+func (h *Handler) remove(ctx context.Context, msg *models.Message, _ string) {
+	args, ok := h.mentionArgs(ctx, msg)
 	if !ok {
+		return
+	}
+	nums, ok := parseNumbers(args)
+	if !ok || len(nums) != 1 {
+		h.reply(ctx, msg, deleteUsageText)
+		return
+	}
+
+	q, ok := h.commandQueue(ctx, msg, "", true, "")
+	if !ok {
+		return
+	}
+
+	// Look the name up first: once removed, the person isn't in the queue
+	// any more, and the name lookup only covers people in it.
+	names := h.namesFor(ctx, q.ID)
+	res, err := h.svc.Remove(ctx, q.ID, nums[0])
+	if err != nil {
+		h.replyError(ctx, msg, "delete", err)
+		return
+	}
+	h.redraw.Schedule(q.ID)
+	h.reply(ctx, msg, removedText(q.Name, render.Name(names, res.UserID), res.From))
+}
+
+// place handles /place <who> [position]: it moves someone already in the
+// queue, given by position, user ID or mention, for fixing a wrong press.
+// Without a position they go to the end. Placing someone else is allowed,
+// like /swap, so it's always announced in the chat. Adding someone new is
+// /add.
+func (h *Handler) place(ctx context.Context, msg *models.Message, _ string) {
+	args, ok := h.mentionArgs(ctx, msg)
+	if !ok {
+		return
+	}
+	nums, ok := parseNumbers(args)
+	if !ok || len(nums) < 1 || len(nums) > 2 {
 		h.reply(ctx, msg, placeUsageText)
+		return
+	}
+	who, to, ok := whoAndPlace(nums)
+	if !ok {
+		h.reply(ctx, msg, errorTexts[model.ErrInvalidPosition])
 		return
 	}
 
@@ -177,33 +239,148 @@ func (h *Handler) place(ctx context.Context, msg *models.Message, args string) {
 		return
 	}
 	h.redraw.Schedule(q.ID)
+	h.reply(ctx, msg, placedText(q.Name, render.Name(h.namesFor(ctx, q.ID), res.UserID), res))
+}
 
-	// The names are looked up after placing, so an inserted person is in
-	// the queue and has a name.
-	if placed, err := h.svc.Queue(ctx, q.ID); err == nil {
-		q = placed
-	} else {
-		log.Printf("reload queue %d after place: %v", q.ID, err)
+// add handles /add <who> [position]: it puts someone who isn't in the queue
+// at that position, or at the end by default. who is a user ID or a
+// mention; or the command replies to the person's message, and then only
+// the position is given, if any. Anyone can add anyone in the chat, so it's
+// announced.
+func (h *Handler) add(ctx context.Context, msg *models.Message, _ string) {
+	args, ok := h.mentionArgs(ctx, msg)
+	if !ok {
+		return
+	}
+	nums, ok := parseNumbers(args)
+	if !ok {
+		h.reply(ctx, msg, addUsageText)
+		return
+	}
+
+	// A reply to someone's message names them, so only the position is
+	// left in the command.
+	if person, replied := repliedPerson(msg); replied {
+		h.saveUser(ctx, *person)
+		nums = append([]int64{person.ID}, nums...)
+	}
+	if len(nums) < 1 || len(nums) > 2 {
+		h.reply(ctx, msg, addUsageText)
+		return
+	}
+	who, to, ok := whoAndPlace(nums)
+	if !ok {
+		h.reply(ctx, msg, errorTexts[model.ErrInvalidPosition])
+		return
+	}
+
+	q, ok := h.commandQueue(ctx, msg, "", true, "")
+	if !ok {
+		return
+	}
+
+	res, err := h.svc.Add(ctx, q.ID, who, to)
+	// Someone the bot has never seen can still be added if Telegram says
+	// they're in this chat; that also gives the bot their name.
+	if errors.Is(err, model.ErrUnknownUser) && h.learnMember(ctx, q.ChatID, who) {
+		res, err = h.svc.Add(ctx, q.ID, who, to)
+	}
+	if err != nil {
+		h.replyError(ctx, msg, "add", err)
+		return
+	}
+	h.redraw.Schedule(q.ID)
+
+	// The names are looked up after adding, so the new person has a name.
+	h.reply(ctx, msg, placedText(q.Name, render.Name(h.namesFor(ctx, q.ID), res.UserID), res))
+}
+
+// whoAndPlace reads "<who> [position]". Without a position it's AtEnd; an
+// explicit 0 is a typo, not "the end", so it's refused.
+func whoAndPlace(nums []int64) (who int64, to int, ok bool) {
+	if len(nums) == 1 {
+		return nums[0], service.AtEnd, true
+	}
+	to = int(nums[1])
+	return nums[0], to, to != service.AtEnd
+}
+
+// parseNumbers reads the whole numbers of a command, like "7 3".
+func parseNumbers(args string) ([]int64, bool) {
+	fields := strings.Fields(args)
+	nums := make([]int64, len(fields))
+	for i, f := range fields {
+		n, err := strconv.ParseInt(f, 10, 64)
+		if err != nil {
+			return nil, false
+		}
+		nums[i] = n
+	}
+	return nums, true
+}
+
+// learnMember asks Telegram whether userID is a member of the chat and, if
+// so, saves their name, so they can be added to a queue.
+func (h *Handler) learnMember(ctx context.Context, chatID, userID int64) bool {
+	m, err := h.b.GetChatMember(ctx, &bot.GetChatMemberParams{ChatID: chatID, UserID: userID})
+	if err != nil {
+		return false
+	}
+	u, ok := memberUser(m)
+	if !ok {
+		return false
+	}
+	h.saveUser(ctx, u)
+	return true
+}
+
+// memberUser returns the user behind a chat member, if they're still in the
+// chat.
+func memberUser(m *models.ChatMember) (models.User, bool) {
+	switch m.Type {
+	case models.ChatMemberTypeOwner:
+		if m.Owner != nil && m.Owner.User != nil {
+			return *m.Owner.User, true
+		}
+	case models.ChatMemberTypeAdministrator:
+		if m.Administrator != nil {
+			return m.Administrator.User, true
+		}
+	case models.ChatMemberTypeMember:
+		if m.Member != nil && m.Member.User != nil {
+			return *m.Member.User, true
+		}
+	case models.ChatMemberTypeRestricted:
+		if m.Restricted != nil && m.Restricted.IsMember && m.Restricted.User != nil {
+			return *m.Restricted.User, true
+		}
+	}
+	return models.User{}, false
+}
+
+// namesFor loads a queue's current names for a public line. A failure only
+// costs the names, which fall back to user IDs.
+func (h *Handler) namesFor(ctx context.Context, queueID int64) map[int64]string {
+	q, err := h.svc.Queue(ctx, queueID)
+	if err != nil {
+		log.Printf("reload queue %d for names: %v", queueID, err)
+		return nil
 	}
 	names, err := h.svc.Names(ctx, q)
 	if err != nil {
-		log.Printf("names for place line in queue %d: %v", q.ID, err)
+		log.Printf("names in queue %d: %v", queueID, err)
 	}
-	h.reply(ctx, msg, placedText(q.Name, render.Name(names, res.UserID), res))
+	return names
 }
 
-// parsePlaceArgs reads "<who> <position>" for /place.
-func parsePlaceArgs(args string) (who int64, to int, ok bool) {
-	fields := strings.Fields(args)
-	if len(fields) != 2 {
-		return 0, 0, false
+// topicOf returns the forum topic a message was sent in, or 0. Only topic
+// messages count: in a group without topics, MessageThreadID can also be
+// set for replies, and that isn't a topic.
+func topicOf(msg *models.Message) int {
+	if msg.IsTopicMessage {
+		return msg.MessageThreadID
 	}
-	who, err1 := strconv.ParseInt(fields[0], 10, 64)
-	to, err2 := strconv.Atoi(fields[1])
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
-	}
-	return who, to, true
+	return 0
 }
 
 // closeQueue handles /close <name>, or /close sent as a reply to a board.
@@ -228,7 +405,7 @@ func (h *Handler) closeQueue(ctx context.Context, msg *models.Message, name stri
 // commandQueue finds the queue a command is about, see pickQueue. If there
 // is none, it explains why in the chat and returns false.
 func (h *Handler) commandQueue(ctx context.Context, msg *models.Message, name string, onlyOne bool, usage string) (model.Queue, bool) {
-	open, err := h.svc.OpenQueues(ctx, msg.Chat.ID)
+	open, err := h.svc.OpenQueues(ctx, msg.Chat.ID, topicOf(msg))
 	if err != nil {
 		h.replyError(ctx, msg, "list open queues", err)
 		return model.Queue{}, false
@@ -320,17 +497,11 @@ func (h *Handler) act(ctx context.Context, q model.Queue, userID int64, action c
 	case callbacks.ToEnd:
 		pos, err = h.svc.ToEnd(ctx, q.ID, userID)
 		text = toEndText(pos)
-	case callbacks.Done:
-		err = h.svc.Done(ctx, q.ID, userID)
-		text = doneText
-	case callbacks.Undo:
-		pos, err = h.svc.Undo(ctx, q.ID, userID)
-		text = undoText(pos)
 	case callbacks.Where:
-		return answer{text: whereText(q.Position(userID), len(q.Waiting()))}
+		return answer{text: whereText(q.Position(userID), len(q.Entries))}
 	case callbacks.All:
-		// Same as /queues: the list of queues at the bottom of the chat.
-		if err := h.postIndex(ctx, q.ChatID); err != nil {
+		// Same as /queues: the list of the topic's queues.
+		if err := h.postIndex(ctx, q.ChatID, q.ThreadID); err != nil {
 			return answer{text: h.userError(err, "post list of queues in chat %d", q.ChatID)}
 		}
 		return answer{}
@@ -412,6 +583,7 @@ func (h *Handler) toast(ctx context.Context, cq *models.CallbackQuery, text stri
 func (h *Handler) reply(ctx context.Context, msg *models.Message, text string) {
 	_, err := h.b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          msg.Chat.ID,
+		MessageThreadID: topicOf(msg),
 		Text:            text,
 		ReplyParameters: &models.ReplyParameters{MessageID: msg.ID},
 	})

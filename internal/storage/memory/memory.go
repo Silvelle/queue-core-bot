@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/Silvelle/queue-core-bot/internal/model"
@@ -47,6 +48,18 @@ func (s *Storage) User(_ context.Context, id int64) (model.User, error) {
 	return u, nil
 }
 
+func (s *Storage) UserByUsername(_ context.Context, username string) (model.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, u := range s.users {
+		if u.Username != "" && strings.EqualFold(u.Username, username) {
+			return u, nil
+		}
+	}
+	return model.User{}, model.ErrNotFound
+}
+
 func (s *Storage) CreateQueue(_ context.Context, q model.Queue) (model.Queue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,13 +92,13 @@ func (s *Storage) UpdateQueue(_ context.Context, q model.Queue) error {
 	return nil
 }
 
-func (s *Storage) OpenQueues(_ context.Context, chatID int64) ([]model.Queue, error) {
+func (s *Storage) OpenQueues(_ context.Context, chatID int64, threadID int) ([]model.Queue, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var out []model.Queue
 	for _, q := range s.queues {
-		if q.ChatID == chatID && !q.Closed {
+		if q.ChatID == chatID && q.ThreadID == threadID && !q.Closed {
 			out = append(out, clone(q))
 		}
 	}
